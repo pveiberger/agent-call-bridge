@@ -114,6 +114,10 @@ node --test test/*.test.mjs
 
 Für einen echten Browser-Dauertest ohne Modellkosten öffnet das Testskript ein temporäres Chromium-Profil auf dem eigenen Rechner. Es spielt deutsche Sprachproben über das Mikrofon des Testbrowsers ein, prüft die Antworten und wartet zum Schluss auf das automatische Auflegen. Mit `--minutes 0` durchläuft es einen Wortwechsel und beide Stillefristen. Voraussetzungen und Aufruf stehen im Skript. [Browser-Dauertest](test/browser-soak.py)
 
+Ein Chrome-Dauerlauf mit lokaler Gegenstelle dauerte 63 Minuten und 53 Sekunden. Alle 92 Beiträge und Antworten gehörten zur selben Sitzung. Nach dem letzten Beitrag fragte die Stimme nach 60,001 Sekunden Stille nach. Weitere 30,016 Sekunden nach der Ansage gab Chrome das Mikrofon frei. Die separaten Tests der Messenger-Adapter simulieren rund 2 Stunden 8 Minuten Gespräch über WhatsApp per QR und 2 Stunden 20 Minuten über Telegram. Beide prüfen auch den Fall, dass das Gerät in der Stille keine Audiopakete mehr sendet.
+
+Der WhatsApp-Business-Adapter lief 61 Minuten und 43 Sekunden mit zwei lokalen WebRTC-Gegenstellen. Die Spracherkennung verstand alle 81 eingespielten Fragen, und die Gegenstelle empfing alle 81 gesprochenen Antworten im selben Anruf. Nach 60 Sekunden Stille kam genau eine Nachfrage. 30 Sekunden nach der Ansage löste der Adapter das Auflegen aus. Nur die Signalisierung von Meta und die Antworten des Chatmodells waren in diesem Test nachgebildet.
+
 Der Browsertest mit einer laufenden Nod-Instanz deckte deutsche Spracheingabe und automatische Wiedergabe ab. Für Hermes Agent v0.23.4 und OpenClaw 2026.11.10 lief je ein veröffentlichtes Gateway im lokalen Docker-Test. Die Bridge verarbeitete deutsche WAV-Dateien über Parakeet und Piper. Ein lokaler Modell-Dummy beantwortete eine Folgefrage anhand der zuvor genannten Farbe. In einem neuen Anruf erhielt er die gleiche Frage ohne die frühere Farbangabe. Die Messenger-Adapter wurden mit lokalen Gegenstellen geprüft. Ihre Anleitungen beschreiben die Voraussetzungen für einen echten Anruf im eigenen Konto.
 
 ## Lizenz

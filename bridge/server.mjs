@@ -111,6 +111,7 @@ function isWav(bytes) {
 }
 const busy = new Set();
 const waiting = new Set();
+const realtime = kind === 'nod' && authMode === 'nod' && e.CALL_REALTIME === 'true';
 const prepareShortSpeech = kind === 'nod' && !!e.STT_BASE_URL && !!e.STT_FAST_BASE_URL && e.CALL_PREPARE_SHORT_SPEECH === 'true';
 async function route(req, res, signal) {
   const path = new URL(req.url, 'http://localhost').pathname;
@@ -177,6 +178,7 @@ async function route(req, res, signal) {
     return send(res, 200, {
       ok: true,
       agent: names[kind],
+      ...(realtime ? { realtime: true, taskProject: (e.CALL_TASK_PROJECT || '').slice(0, 150) } : {}),
       ...(prepareShortSpeech ? { prepareShortSpeech: true } : {}),
       ...(e.TTS_ENGINE === 'pocket' ? { speechStream: true } : {}),
       chatUrl: e.CHAT_URL || (authMode === 'nod' ? '/' : null),
@@ -184,6 +186,13 @@ async function route(req, res, signal) {
   }
   const call = req.headers['x-call-id'];
   if (!uuid.test(call || '')) throw new Failure(400, 'Ungültige Anruf-ID.');
+  if (realtime && web && action === 'transcript' && req.method === 'POST') {
+    const id = req.headers['x-request-id'];
+    if (!uuid.test(id || '') || req.headers['content-type']?.split(';')[0] !== 'text/plain')
+      throw new Failure(400, 'Transkript und Beitrags-ID erforderlich.');
+    const text = (await read(req, 48_000)).toString('utf8');
+    return send(res, 200, { id: await adapter.submitTranscript(text, id, auth, signal) });
+  }
   const preparation = prepareShortSpeech && web && action === 'prepare-utterance';
   if ((action === 'utterance' || preparation) && req.method === 'POST') {
     const id = req.headers['x-request-id'];

@@ -35,6 +35,15 @@ export function nodAdapter({ base, authority, transcribe }) {
       headers: { Host: authority, ...auth, ...options.headers },
     });
   }
+  async function submitMessage(route, payload, messageId, threadId, auth, signal) {
+    const receipt = await api(route, auth, {
+      ...payload, headers: { ...payload.headers, 'X-Nod-Input-Mode': 'voice-call' },
+      signal, timeout: 135_000,
+    });
+    if (receipt.verificationStatus || receipt.messageId !== messageId || !uuid.test(receipt.turnId))
+      throw new Failure(409, 'Diese Eingabe bitte direkt in Nod prüfen.');
+    return [threadId, receipt.turnId, messageId].join('.');
+  }
   async function requirePrivateSession(signal) {
     try {
       await request(base, '/api/session', {
@@ -52,6 +61,16 @@ export function nodAdapter({ base, authority, transcribe }) {
     );
   }
   return {
+    async submitTranscript(text, messageId, auth, signal) {
+      if (typeof text !== 'string' || !text.trim() || text.length > 12000 || text.trimStart().startsWith('/'))
+        throw new Failure(400, 'Ungültiger gesprochener Beitrag.');
+      const state = await api('/api/state', auth, { signal });
+      if (privateInputPending(state))
+        throw new Failure(409, 'In Nod wartet eine Freigabe oder private Eingabe. Bitte öffne den Chat.');
+      const body = jsonPost({ clientMessageId: messageId, threadId: state.threadId,
+        chatClearedAt: state.chatClearedAt ?? null, text: text.trim(), attachmentIds: [] });
+      return submitMessage('/api/messages', body, messageId, state.threadId, auth, signal);
+    },
     async check(auth, signal, verifyCookieAccess = false) {
       if (verifyCookieAccess) await requirePrivateSession(signal);
       const session = await api('/api/session', auth, { signal });
@@ -130,20 +149,7 @@ export function nodAdapter({ base, authority, transcribe }) {
       } else {
         payload = await multipart({ message: JSON.stringify(message) }, audio);
       }
-      const receipt = await api(route, auth, {
-        ...payload,
-        headers: { ...payload.headers, 'X-Nod-Input-Mode': 'voice-call' },
-        signal,
-        timeout: 135_000,
-      });
-      if (
-        receipt.verificationStatus ||
-        receipt.messageId !== messageId ||
-        !uuid.test(receipt.turnId)
-      ) {
-        throw new Failure(409, 'Diese Eingabe bitte direkt in Nod prüfen.');
-      }
-      return [state.threadId, receipt.turnId, messageId].join('.');
+      return submitMessage(route, payload, messageId, state.threadId, auth, signal);
     },
     waitForTurn(id, auth, signal, callId, initial) {
       return waitForNod(

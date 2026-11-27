@@ -34,6 +34,35 @@ async function waitReply(adapter, id, callId) {
   }
   throw new Error('Timed out waiting for local fixture');
 }
+test('spoken task creation and completion use normal Nod message intake and honor pending approvals', async (t) => {
+  const threadId = randomUUID();
+  const posted = [];
+  let pending = false;
+  const base = await fixture(t, (req, body) => {
+    if (req.url === '/api/state') return {
+      threadId, chatClearedAt: null,
+      messages: pending ? [{ approval: { state: 'pending' } }] : [],
+    };
+    assert.equal(req.url, '/api/messages');
+    assert.equal(req.headers['x-nod-input-mode'], 'voice-call');
+    const message = JSON.parse(body);
+    assert.equal(message.threadId, threadId);
+    posted.push(message.text);
+    return { messageId: message.clientMessageId, turnId: randomUUID() };
+  });
+  const adapter = nodAdapter({ base, authority: new URL(base).host });
+  const create = 'Erstelle die Aufgabe Testdruck prüfen.';
+  const complete = 'Hake die Aufgabe Testdruck prüfen ab.';
+  for (const text of [create, complete]) {
+    const id = randomUUID();
+    const receipt = await adapter.submitTranscript(text, id, {}, undefined);
+    assert.equal(receipt.split('.')[2], id);
+  }
+  pending = true;
+  await assert.rejects(adapter.submitTranscript(complete, randomUUID(), {}, undefined), { status: 409 });
+  await assert.rejects(adapter.submitTranscript('/clear', randomUUID(), {}, undefined), { status: 400 });
+  assert.deepEqual(posted, [create, complete]);
+});
 for (const kind of ['hermes', 'openclaw']) {
   test(kind + ' speech input, context, retry and call isolation', async (t) => {
     const requests = [];

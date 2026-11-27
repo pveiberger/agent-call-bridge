@@ -2,6 +2,8 @@
 
 Sprich auf Deutsch mit deinem selbst gehosteten Nod-, Hermes- oder OpenClaw-Assistenten. Ein Klick öffnet das Mikrofon. Nach einer Sprechpause sendet die Bridge deinen Beitrag, spricht die Antwort und hört wieder zu. Zur Auswahl stehen lokale deutsche Stimmen von Piper und Pocket TTS. Native eingehende WhatsApp- und Telegram-Anrufe haben eigene optionale Adapter.
 
+Für deutsche OpenAI-Realtime-Anrufe im Nod-Browserchat benötigt Nod den Endpunkt `/api/voice/realtime`, einen verbundenen OpenAI-API-Schlüssel und `NOD_REALTIME_CALLS=true`. Setze in der Bridge `AGENT_BACKEND=nod`, `WEB_AUTH=nod` und `CALL_REALTIME=true`. Mit `CALL_TASK_PROJECT` lässt sich der Name des persönlichen Aufgabenprojekts angeben. Beim Verbindungsaufbau ertönt drei Sekunden lang ein Freizeichen. Anschließend empfängt OpenAI das Mikrofon-Audio über WebRTC. Allgemeine Fragen beantwortet die Stimme direkt. Bei Aufgaben und verbundenen Apps verarbeitet Nod den erkannten Nutzerbeitrag im Chat und nutzt die vorhandenen Freigaben. OpenAI rechnet die Sprachverbindung über das API-Projekt ab.
+
 | Zugang | So beginnt das Gespräch | Voraussetzungen |
 | --- | --- | --- |
 | Browser | `/anruf/` öffnen und **Anruf starten** wählen | HTTPS und Mikrofonfreigabe. Für einen Test auf demselben Rechner funktioniert auch localhost. |

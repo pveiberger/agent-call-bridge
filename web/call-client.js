@@ -1,5 +1,6 @@
 import { VoiceDetector } from "./vad.js";
 import { playPcmSpeech } from "./pcm.js";
+import { realtimeCall, ringback } from "./realtime.js";
 
 const presencePrompt = "Sind Sie noch da? Wenn ja, sprechen Sie jetzt.";
 
@@ -225,7 +226,11 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
     );
   }
 
-  async function capture(call) {
+  async function capture(call, auth) {
+    if (auth.realtime === true) {
+      present("starting", "Es klingelt …", "Der Anruf verbindet dich mit OpenAI Realtime.");
+      call.ring = ringback(call.context, call.controller.signal);
+    }
     const stream = await navigator.mediaDevices.getUserMedia({
       video: false,
       audio: {
@@ -249,6 +254,16 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
         );
     });
     const ctx = call.context;
+    if (auth.realtime === true) {
+      stream.getAudioTracks()[0].enabled = false;
+      const fail = (message, chat = false) => finishError(call, new CallError(message, chat));
+      try {
+        await realtimeCall({ call, project: auth.taskProject, ring: call.ring, present, end, fail, request, readStatus, onAnswer });
+      } catch (cause) {
+        fail(cause.message);
+      }
+      return;
+    }
     const source = ctx.createMediaStreamSource(stream);
     const filter = ctx.createBiquadFilter();
     filter.type = "highpass";
@@ -426,7 +441,7 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
           );
         }
       };
-      await capture(call);
+      await capture(call, auth);
       check(call);
       keepScreenAwake(call);
     } catch (error) {

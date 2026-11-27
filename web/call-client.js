@@ -7,6 +7,7 @@ const presencePrompt = "Sind Sie noch da? Wenn ja, sprechen Sie jetzt.";
 export function createCallClient({ onState, onAnswer, onSession, previewSession = false }) {
   let active = null;
   let phase = "idle";
+  let latestState;
   let agent = "Nod";
   let chatUrl = "/";
   let disposed = false;
@@ -14,7 +15,25 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
 
   function present(nextPhase, status, detail = "", action = false) {
     phase = nextPhase;
-    if (!disposed) onState({ phase, status, detail, active: Boolean(active), action });
+    latestState = { phase, status, detail, active: Boolean(active), action };
+    publish();
+  }
+
+  function publish() {
+    if (!disposed) onState({ ...latestState, muted: Boolean(active?.userMuted) });
+  }
+
+  function setMuted(value) {
+    const call = active;
+    if (!call || call.userMuted === value) return;
+    call.userMuted = value;
+    if (call.onMuteChange) call.onMuteChange();
+    else if (call.listen && (phase === "listening" || phase === "capturing")) {
+      call.preparation?.controller.abort();
+      call.preparation = null;
+      arm(call, call.afterPrompt);
+    }
+    publish();
   }
 
   function sessionInfo(info) {
@@ -181,8 +200,10 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
 
   async function askIfPresent(call) {
     mute(call);
-    present("speaking", agent + " fragt nach", presencePrompt);
+    present("working", agent + " fragt nach", presencePrompt);
     call.presenceAudio ??= await speechAudio(call, presencePrompt);
+    check(call);
+    present("speaking", agent + " fragt nach", presencePrompt);
     await playback(call, call.presenceAudio);
     await waitForSpeaker(call);
     arm(call, true);
@@ -190,10 +211,11 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
 
   function arm(call, afterPrompt = false) {
     check(call);
+    call.afterPrompt = afterPrompt;
     call.stream.getAudioTracks().forEach((track) => {
-      track.enabled = true;
+      track.enabled = !call.userMuted;
     });
-    call.listen(true);
+    call.listen(!call.userMuted);
     present(
       "listening",
       "Ich höre zu",
@@ -257,6 +279,7 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
       return;
     }
     call.stream = stream;
+    stream.getAudioTracks().forEach((track) => { track.enabled = false; });
     audioStateChanged(call);
     stream.getAudioTracks()[0].addEventListener("ended", () => {
       if (active === call)
@@ -268,7 +291,6 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
     });
     const ctx = call.context;
     if (auth.realtime === true) {
-      stream.getAudioTracks()[0].enabled = false;
       const fail = (message, chat = false) => finishError(call, new CallError(message, chat));
       try {
         await realtimeCall({ call, project: auth.taskProject, ring: call.ring, present, end, fail, request, readStatus, onAnswer });
@@ -285,7 +307,7 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
     mute.gain.value = 0;
     call.nodes.push(source, filter, mute);
     const event = (data) => {
-      if (active !== call) return;
+      if (active !== call || call.userMuted) return;
       if (phase !== "listening" && phase !== "capturing") return;
       if (data.type === "activity") waitForSpeech(call);
       if (data.type === "voice")
@@ -414,6 +436,7 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
     }
     const call = {
       id: crypto.randomUUID(),
+      userMuted: false,
       controller: new AbortController(),
       nodes: [],
     };
@@ -643,6 +666,7 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
   return {
     start: begin,
     stop,
+    setMuted,
     dispose() {
       disposed = true;
       stop();

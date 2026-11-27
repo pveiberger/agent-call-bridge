@@ -85,6 +85,7 @@ export async function realtimeCall({
     prompt = false,
     renewSoon = false;
   const history = [];
+  let capturingItem, discardedItem;
   const alive = () => !signal.aborted;
   const setTimer = (delay, fn) => {
     clearTimeout(timer);
@@ -132,7 +133,7 @@ export async function realtimeCall({
     phase = 'listening';
     turn = null;
     prompt = afterPrompt;
-    track.enabled = true;
+    track.enabled = !call.userMuted;
     present(
       'listening',
       'Ich höre zu',
@@ -166,6 +167,15 @@ export async function realtimeCall({
       ),
     );
   }
+  call.onMuteChange = () => {
+    if (!['listening', 'capturing'].includes(phase)) return;
+    track.enabled = !call.userMuted;
+    if (call.userMuted && phase === 'capturing') {
+      discardedItem = capturingItem;
+      send({ type: 'input_audio_buffer.clear' });
+      listen(prompt);
+    }
+  };
   function handOff(current, toolId) {
     if (current.submitted) return;
     current.toolId =
@@ -264,6 +274,11 @@ export async function realtimeCall({
       e.type === 'input_audio_buffer.speech_started' &&
       phase === 'listening'
     ) {
+      if (call.userMuted) {
+        discardedItem = e.item_id;
+        return;
+      }
+      capturingItem = e.item_id;
       clearTimeout(timer);
       phase = 'capturing';
       prompt = false;
@@ -273,6 +288,7 @@ export async function realtimeCall({
       e.type === 'input_audio_buffer.committed' &&
       ['listening', 'capturing'].includes(phase)
     ) {
+      if (call.userMuted || (discardedItem && e.item_id === discardedItem)) return;
       phase = 'transcribing';
       prompt = false;
       track.enabled = false;
@@ -310,6 +326,7 @@ export async function realtimeCall({
       if (!turn && prompt) turn = { item: 'presence' };
       if (turn) {
         turn.drainedId = e.response_id;
+        if (!turn.finished) present('working', 'Nod antwortet', '');
         finishReply();
       }
     }
@@ -360,6 +377,7 @@ export async function realtimeCall({
     closePeer();
     turn = null;
     prompt = false;
+    capturingItem = discardedItem = undefined;
     renewSoon = false;
     phase = 'connecting';
     if (!first)

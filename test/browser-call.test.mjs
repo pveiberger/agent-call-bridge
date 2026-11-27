@@ -206,6 +206,37 @@ test('preloading the in-chat call is passive and disposing releases a microphone
   assert.equal(microphoneRequests, 1);
 });
 
+test('muting pending microphone access holds local capture through playback', async (t) => {
+  let grant;
+  const call = await browser(t, () => ({ state: 'reply', text: 'Vier.' }), null, null, {
+    embedded: true,
+    microphone: () => new Promise((resolve) => { grant = resolve; }),
+  });
+  const started = call.client.start();
+  await settled();
+  call.client.setMuted(true);
+  grant();
+  await started;
+  assert.equal(call.track.enabled, false);
+  call.emit('utterance');
+  assert.ok(!call.requests.some(r => r.route === 'utterance'));
+  call.client.setMuted(false);
+  assert.equal(call.track.enabled, true);
+  call.emit('utterance');
+  await settled();
+  assert.equal(call.phase(), 'speaking');
+  call.client.setMuted(true);
+  call.client.setMuted(false);
+  assert.equal(call.track.enabled, false);
+  call.client.setMuted(true);
+  await call.finishAudio();
+  await call.advance(180);
+  assert.equal(call.phase(), 'listening');
+  assert.equal(call.track.enabled, false);
+  call.client.stop();
+  assert.ok(call.track.stopped);
+});
+
 test('a stalled audio output releases its context and gives a speaker hint before requesting the microphone', async (t) => {
   let context, resolveOutput;
   let micRequests = 0;

@@ -113,14 +113,15 @@ async function callRig(t, result = { state: 'reply', text: 'Ist erledigt.' }) {
     );
   }
   t.after(() => scope.abort());
-  await realtimeCall({
-    call: {
-      controller: scope,
-      stream: { getAudioTracks: () => [track] },
-      context: {
-        createMediaStreamSource: () => ({ connect() {}, disconnect() {} }),
-      },
+  const call = {
+    controller: scope,
+    stream: { getAudioTracks: () => [track] },
+    context: {
+      createMediaStreamSource: () => ({ connect() {}, disconnect() {} }),
     },
+  };
+  await realtimeCall({
+    call,
     ring: Promise.resolve(),
     project: 'Mein Projekt',
     present: (...s) => states.push(s),
@@ -161,6 +162,10 @@ async function callRig(t, result = { state: 'reply', text: 'Ist erledigt.' }) {
     },
   ];
   return {
+    mute(value) {
+      call.userMuted = value;
+      call.onMuteChange();
+    },
     scope,
     track,
     events,
@@ -174,6 +179,31 @@ async function callRig(t, result = { state: 'reply', text: 'Ist erledigt.' }) {
     ended: () => ended,
   };
 }
+
+test('manual mute discards a partial turn and survives response playback', async (t) => {
+  const r = await callRig(t);
+  r.emit({ type: 'input_audio_buffer.speech_started', item_id: 'partial' });
+  r.mute(true);
+  assert.equal(r.track.enabled, false);
+  r.mute(false);
+  r.emit({ type: 'input_audio_buffer.committed', item_id: 'partial' });
+  r.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'partial', transcript: 'Eine neue Aufgabe anlegen.' });
+  assert.equal(r.submissions.length, 0);
+  assert.equal(r.track.enabled, true);
+  r.speak('direct', 'Wie viel ist zwei plus zwei?');
+  r.emit({ type: 'output_audio_buffer.started', response_id: 'audio' });
+  r.mute(true);
+  r.mute(false);
+  assert.equal(r.track.enabled, false);
+  r.mute(true);
+  r.finish('answer', 'direct', 'audio', r.audio);
+  r.emit({ type: 'output_audio_buffer.stopped', response_id: 'audio' });
+  assert.equal(r.track.enabled, false);
+  r.speak('muted', 'Eine neue Aufgabe anlegen.');
+  assert.equal(r.submissions.length, 0);
+  r.mute(false);
+  assert.equal(r.track.enabled, true);
+});
 
 test('direct answers, approval handoff and duplicate function events use only the owner transcript', async (t) => {
   const r = await callRig(t, { state: 'approval' });
@@ -252,11 +282,14 @@ test('a long call renews between utterances with bounded history and no repeated
   r.emit({ type: 'input_audio_buffer.speech_started' });
   t.mock.timers.tick(53 * 60_000);
   r.speak('one', 'Wie viel ist zwei plus zwei?');
+  r.mute(true);
   r.finish('answer', 'one', 'r1', r.audio);
   r.emit({ type: 'output_audio_buffer.stopped', response_id: 'r1' });
   await tick();
   assert.equal(r.peers.length, 2);
   assert.equal(r.peers[0].closed, true);
+  assert.equal(r.track.enabled, false);
+  r.mute(false);
   assert.equal(r.track.enabled, true);
   assert.equal(r.submissions.length, 0);
   assert.deepEqual(

@@ -21,11 +21,14 @@ class ReplyTrack(AudioStreamTrack):
         self.pts = 0
 
     async def play(self, data):
-        self.audio = decoded_pcm(data)
+        await self.play_pcm(decoded_pcm(data))
+
+    async def play_pcm(self, pcm):
+        self.audio = pcm
         self.offset = 0
         self.drained.clear()
-        await self.drained.wait()
-        await asyncio.sleep(0.35)
+        # The peer can stop pulling media even while signaling stays connected.
+        await asyncio.wait_for(self.drained.wait(), timeout=len(self.audio) / (2 * RATE) + 8)
 
     async def recv(self):
         now = time.monotonic()

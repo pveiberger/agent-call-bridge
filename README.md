@@ -1,6 +1,6 @@
 # Agent Call Bridge
 
-Sprich auf Deutsch mit deinem selbst gehosteten Nod-, Hermes- oder OpenClaw-Assistenten. Ein Klick öffnet das Mikrofon. Nach einer Sprechpause sendet die Bridge deinen Beitrag, liest die Antwort mit einer lokalen deutschen Piper-Stimme vor und hört wieder zu. Native eingehende WhatsApp- und Telegram-Anrufe haben eigene optionale Adapter.
+Sprich auf Deutsch mit deinem selbst gehosteten Nod-, Hermes- oder OpenClaw-Assistenten. Ein Klick öffnet das Mikrofon. Nach einer Sprechpause sendet die Bridge deinen Beitrag, spricht die Antwort und hört wieder zu. Zur Auswahl stehen lokale deutsche Stimmen von Piper und Pocket TTS. Native eingehende WhatsApp- und Telegram-Anrufe haben eigene optionale Adapter.
 
 | Zugang | So beginnt das Gespräch | Voraussetzungen |
 | --- | --- | --- |
@@ -9,7 +9,9 @@ Sprich auf Deutsch mit deinem selbst gehosteten Nod-, Hermes- oder OpenClaw-Assi
 | WhatsApp Business Platform | Eine für Calling freigeschaltete Cloud-API-Nummer anrufen | Öffentlicher HTTPS-Webhook, erreichbarer WebRTC-Medienpfad und zugelassene Anrufer. [Einrichtung](channels/whatsapp/README.md) |
 | Telegram | Ein eigens verbundenes Telegram-Benutzerkonto anrufen | MTProto-Anmeldung, persistente Sitzung und zugelassene numerische Anrufer-IDs. Ein bestehender Bot kann alternativ einen Button für den Browser-Anruf anbieten. [Einrichtung](channels/telegram/README.md) |
 
-Während der Assistent antwortet, pausiert die Aufnahme. Die Browserseite muss im Vordergrund bleiben. Das Auflegen schließt das Mikrofon und beendet die Wiedergabe. Ein bereits an den Assistenten übermittelter Auftrag kann im regulären Chat weiterlaufen.
+Ein aktives Gespräch hat keine feste Gesamtdauer. Nach 60 Sekunden ohne erkannte Sprache im Hörmodus fragt die Stimme „Sind Sie noch da? Wenn ja, sprechen Sie jetzt.“ Nach der Ansage bleiben 30 Sekunden zum Antworten. Verstreicht auch diese Frist, legt der Adapter auf. Verarbeitungszeit des Assistenten und Wiedergabe zählen nicht als Stille. Die Nachfrage ist fest hinterlegt und erfordert keinen Chatmodell-Aufruf. Während der Assistent spricht, pausiert die Aufnahme.
+
+Im Browser kann ein Gespräch bei einem Tabwechsel weiterlaufen, solange das Betriebssystem Mikrofon und Audio freigibt. Das Auflegen schließt das Mikrofon und beendet die Wiedergabe. Ein bereits übermittelter Auftrag kann im regulären Chat weiterlaufen.
 
 ## Installation
 
@@ -25,7 +27,7 @@ Die mitgelieferten Images wurden auf **Linux/AMD64** mit Docker Compose v2 getes
    openssl rand -hex 32
    ```
 
-2. Den generierten Wert in `.env` als `BRIDGE_WEB_TOKEN` speichern. Den Assistenten wie unten beschrieben konfigurieren. `PUBLIC_ORIGIN` ist die **exakte** Adresse des Browserzugangs einschließlich Schema und gegebenenfalls Port.
+2. Den generierten Wert in `.env` als `BRIDGE_WEB_TOKEN` speichern. Die Bridge verbindet sich mit einem bereits eingerichteten Nod-, Hermes- oder OpenClaw-Server. Für den voreingestellten Nod-Zugang den vorhandenen `NOD_AUTH_TOKEN` aus der privaten Konfiguration des Nod-Servers übernehmen und seine beiden URLs wie unten beschrieben setzen. `PUBLIC_ORIGIN` ist die **exakte** Adresse des Browserzugangs einschließlich Schema und gegebenenfalls Port.
 3. Die Dienste starten.
 
    ```sh
@@ -37,7 +39,13 @@ Die mitgelieferten Images wurden auf **Linux/AMD64** mit Docker Compose v2 getes
 
 ### Nod
 
-In `.env` muss `AGENT_BACKEND=nod` stehen. `NOD_BASE_URL` ist die aus dem Bridge-Container erreichbare Adresse des Nod-Servers. `NOD_PUBLIC_URL` entspricht dem in Nod konfigurierten Origin. Für den eigenständigen Login oder für Messenger-Anrufe braucht die Bridge `NOD_AUTH_TOKEN`. Nod übernimmt Transkription, Chatverlauf, Toolzugriff und seine bestehenden Aktionsfreigaben. **Vor dem ersten Anruf** einmal im normalen Nod-Chat eine Sprachaufnahme senden und gegebenenfalls die lokale Transkription vorbereiten lassen. [Nod-Audionachrichten](https://nod.n8n.io/docs/use/chat/#send-an-audio-message)
+Standardmäßig laufen Sprachnachrichten über Nods eigenen Spracheingang. Für die Anrufkanäle kannst du einen eigenen Transkriptionsdienst über `STT_BASE_URL` und `STT_MODEL` wählen. Dann erscheint das Transkript als Text im bestehenden Nod-Chat. Die Bridge prüft ausstehende Freigaben und private Eingaben vor der Übergabe. Ein privater `STT_PROMPT` hilft dem Modell bei der Schreibweise von Namen oder häufig verwendeten Begriffen. Die optionale Installation mit Whisper Large v3 Turbo verarbeitet Sprache lokal. [Lokale Spracherkennung](stt/README.md)
+
+Für kurze Äußerungen bis sechs Sekunden lassen sich Parakeet und Whisper kombinieren. Parakeet erkennt sie zunächst auf der CPU. Bei unsicheren Wörtern prüft Whisper dieselbe Aufnahme. Längere Beiträge gehen direkt an Whisper. Widersprechen sich beide Transkripte bei einer Verneinung, fragt die Stimme nach, bevor der Assistent einen Auftrag erhält. Häufige Eigennamen kannst du privat hinterlegen. [Parakeet und Whisper kombinieren](stt/parakeet/README.md)
+
+Die deutsche Stimme **Jürgen** aus Pocket TTS läuft ebenfalls lokal. Mit diesem Profil beginnen der Browser und die Messenger-Adapter die Wiedergabe, während die Stimme den Rest der Antwort noch erzeugt. [Pocket TTS einrichten](tts/pocket/README.md)
+
+In `.env` muss `AGENT_BACKEND=nod` stehen. `NOD_BASE_URL` ist die aus dem Bridge-Container erreichbare Adresse des Nod-Servers. `NOD_PUBLIC_URL` entspricht dem in Nod konfigurierten Origin. Für den eigenständigen Login oder für Messenger-Anrufe braucht die Bridge `NOD_AUTH_TOKEN`. Chatverlauf, Tools und Aktionsfreigaben bleiben in Nod. Wenn du Nods eingebauten Spracheingang nutzt, sende vor dem ersten Anruf eine Sprachaufnahme im normalen Nod-Chat und lasse bei Bedarf das dortige Modell vorbereiten. [Nod-Audionachrichten](https://nod.n8n.io/docs/use/chat/#send-an-audio-message)
 
 Die beiden Compose-Projekte können sich über ein gemeinsames Docker-Netz erreichen. Bei einem vorhandenen Nod-Self-Host-Stack lässt sich die Bridge zusätzlich an sein Outbound-Netz anschließen. Den tatsächlichen Netznamen in dieser optionalen `compose.override.yaml` einsetzen und `NOD_BASE_URL=http://server:4310` entsprechend anpassen.
 
@@ -55,7 +63,7 @@ Wer die Seite **unter demselben Origin wie Nod** betreibt, kann den bestehenden 
 
 ### Hermes und OpenClaw
 
-Beide Adapter verwenden den Agenten-Server mit seinem normalen Chat-Completions-Endpunkt. Der Assistent behält seine eigenen Tools und Berechtigungen. Zusätzlich benötigt die Bridge einen Transkriptionsdienst mit OpenAI-kompatiblem `POST /audio/transcriptions`. `STT_BASE_URL` zeigt auf den API-Prefix, beispielsweise `https://api.openai.com/v1`, `STT_MODEL` auf ein dort unterstütztes Modell, beispielsweise `whisper-1`. Für einen authentifizierten Dienst `STT_API_KEY` setzen. An diesen Dienst geht die Audioaufnahme. Die lokale Piper-Ausgabe verarbeitet nur den Antworttext.
+Beide Adapter verwenden den Agenten-Server mit seinem normalen Chat-Completions-Endpunkt. Der Assistent behält seine eigenen Tools und Berechtigungen. Zusätzlich benötigt die Bridge einen Transkriptionsdienst mit OpenAI-kompatiblem `POST /audio/transcriptions`. `STT_BASE_URL` zeigt auf den API-Prefix, beispielsweise `https://api.openai.com/v1`, `STT_MODEL` auf ein dort unterstütztes Modell, beispielsweise `whisper-1`. Für einen authentifizierten Dienst `STT_API_KEY` setzen. An diesen Dienst geht die Audioaufnahme. Die lokale Sprachausgabe verarbeitet den Antworttext.
 
 | Variable | Hermes Agent | OpenClaw |
 | --- | --- | --- |
@@ -64,7 +72,9 @@ Beide Adapter verwenden den Agenten-Server mit seinem normalen Chat-Completions-
 | `AGENT_API_KEY` | Hermes-API-Server-Schlüssel | Gateway-Bearer-Token |
 | `AGENT_MODEL` | Modellalias aus der Hermes-Konfiguration, standardmäßig `hermes-agent` | `openclaw` oder z. B. `openclaw/default` |
 
-Für OpenClaw den Chat-Completions-Endpunkt im Gateway aktivieren. Ein Gateway-Schlüssel gewährt weitreichenden Zugriff und gehört nur auf Server, die du kontrollierst. Hermes erhält Gesprächskontext aus den letzten acht Frage-Antwort-Paaren desselben Anrufs. OpenClaw erhält einen eigenen Sitzungsschlüssel pro Anruf. Nod verwendet seinen bestehenden persönlichen Chat. Mit `CHAT_URL` lässt sich ein Link zur normalen Agentenoberfläche angeben. [Hermes-API-Server](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/api-server.md) · [OpenClaw-Gateway](https://docs.openclaw.ai/gateway/openai-http-api)
+Bei Hermes den API-Server mit `API_SERVER_ENABLED=true` und einem privaten `API_SERVER_KEY` aktivieren. Diesen Schlüssel in der Bridge als `AGENT_API_KEY` hinterlegen. In einem gemeinsamen privaten Docker-Netz braucht der Hermes-Server eine für die Bridge erreichbare Bind-Adresse, etwa `API_SERVER_HOST=0.0.0.0` bei internem Container-Port 8642. Bei OpenClaw den Gateway-Schalter `gateway.http.endpoints.chatCompletions.enabled` auf `true` setzen. Ein Gateway-Schlüssel gewährt weitreichenden Zugriff und gehört nur auf Server, die du kontrollierst. [Hermes-API-Server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server) · [OpenClaw-Gateway](https://docs.openclaw.ai/gateway/openai-http-api)
+
+Hermes erhält Gesprächskontext aus den letzten acht Frage-Antwort-Paaren desselben Anrufs. OpenClaw erhält einen eigenen Sitzungsschlüssel pro Anruf. Nod verwendet seinen bestehenden persönlichen Chat. Mit `CHAT_URL` lässt sich ein Link zur normalen Agentenoberfläche angeben.
 
 ### Messenger
 
@@ -74,13 +84,37 @@ Für die nativen Adapter einen eigenen zufälligen `BRIDGE_CHANNEL_SECRET` auf B
 
 **WhatsApp Business und Telegram.** Für Betreiber einer freigeschalteten Business-Nummer gibt es einen separaten Adapter für Metas Calling API. Für native Telegram-Einzelanrufe setzt Telegram ein angemeldetes Benutzerkonto voraus. Ein bereits verbundener Bot kann einen Button zum Browser-Anruf anbieten. [Meta Calling](https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/) · [Telegram phone.acceptCall](https://core.telegram.org/method/phone.acceptCall)
 
+### Mehrere Compose-Dateien gemeinsam verwenden
+
+Die einzelnen Adapteranleitungen zeigen jeweils den Start eines Profils. Sobald du Dateien kombinierst, speichere die vollständige Auswahl in der privaten `.env` im Projektstamm. Compose berücksichtigt alle dort aufgeführten Dateien beim Start und bei Updates. Dieses Beispiel verbindet die Bridge über die oben gezeigte `compose.override.yaml` mit Nod und aktiviert beide privaten Messenger-Adapter.
+
+```dotenv
+COMPOSE_PATH_SEPARATOR=:
+COMPOSE_FILE=compose.yaml:compose.override.yaml:channels/whatsapp-linked/compose.yaml:channels/telegram/compose.yaml
+COMPOSE_PROFILES=whatsapp-linked,telegram
+```
+
+Führe in `COMPOSE_FILE` nur vorhandene Dateien auf. Für die Pocket-Stimme ergänze `tts/pocket/compose.yaml`. Für lokales Whisper ergänze `stt/compose.yaml`, bei NVIDIA danach `stt/nvidia.yaml`, sowie `local-stt` in `COMPOSE_PROFILES`. Jeder Messenger braucht weiterhin seine eigene private Konfigurationsdatei und die Anmeldung aus seiner Anleitung.
+
+Mit dieser Auswahl gelten die folgenden Befehle im Projektstamm. Die beiden Anmeldebefehle brauchst du bei der ersten Kopplung.
+
+```sh
+docker compose config --services
+docker compose build
+docker compose run --rm --no-deps whatsapp-linked pair
+docker compose run --rm --no-deps telegram login
+docker compose up -d --wait
+```
+
 ## Überprüfung
 
 ```sh
 node --test test/*.test.mjs
 ```
 
-Getestet wurden der Browserablauf gegen eine laufende Nod-Instanz einschließlich deutscher Spracheingabe und automatischer deutscher Wiedergabe sowie die Protokolladapter mit lokalen Gegenstellen. Die Anleitungen der Messenger-Adapter beschreiben die Voraussetzungen für einen echten Anruf im eigenen Konto. Hermes und OpenClaw wurden gegen simulierte API-Gegenstellen geprüft.
+Für einen echten Browser-Dauertest ohne Modellkosten öffnet das Testskript ein temporäres Chromium-Profil auf dem eigenen Rechner. Es spielt deutsche Sprachproben über das Mikrofon des Testbrowsers ein, prüft die Antworten und wartet zum Schluss auf das automatische Auflegen. Mit `--minutes 0` durchläuft es einen Wortwechsel und beide Stillefristen. Voraussetzungen und Aufruf stehen im Skript. [Browser-Dauertest](test/browser-soak.py)
+
+Der Browsertest mit einer laufenden Nod-Instanz deckte deutsche Spracheingabe und automatische Wiedergabe ab. Für Hermes Agent v0.23.4 und OpenClaw 2026.11.10 lief je ein veröffentlichtes Gateway im lokalen Docker-Test. Die Bridge verarbeitete deutsche WAV-Dateien über Parakeet und Piper. Ein lokaler Modell-Dummy beantwortete eine Folgefrage anhand der zuvor genannten Farbe. In einem neuen Anruf erhielt er die gleiche Frage ohne die frühere Farbangabe. Die Messenger-Adapter wurden mit lokalen Gegenstellen geprüft. Ihre Anleitungen beschreiben die Voraussetzungen für einen echten Anruf im eigenen Konto.
 
 ## Lizenz
 

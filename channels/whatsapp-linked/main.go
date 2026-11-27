@@ -188,7 +188,7 @@ func run(ctx context.Context, client *wa.Client, expected string) error {
 			go func() { _ = call.Reject() }()
 			return
 		}
-		cctx, cancel := context.WithTimeout(lifetime, 2*time.Hour)
+		cctx, cancel := context.WithCancel(lifetime)
 		activeMu.Lock()
 		stopActive = cancel
 		activeMu.Unlock()

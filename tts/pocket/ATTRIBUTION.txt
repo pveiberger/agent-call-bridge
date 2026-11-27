@@ -1,0 +1,12 @@
+Pocket TTS German (without voice cloning), by Kyutai.
+The pretrained weights, tokenizer, and Jürgen preset are distributed as
+published in the German model release. The configuration uses local paths.
+
+Model card and version
+https://huggingface.co/kyutai/pocket-tts-without-voice-cloning/tree/1e08e6a23401048648a9fdcfde2f89348215c2a7
+Creative Commons Attribution 4.0 International
+https://creativecommons.org/licenses/by/4.0/
+
+The standalone Pocket TTS runtime comes from the v4.0.1 release.
+https://github.com/kyutai-labs/pocket-tts/releases/tag/v4.0.1
+See the accompanying LICENSE file for the runtime.

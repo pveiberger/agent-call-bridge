@@ -2,17 +2,12 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createHmac } from 'node:crypto';
-import {
-  Failure,
-  equalSecret,
-  jsonPost,
-  read,
-  request,
-  uuid,
-  webOrigins,
-} from './http.mjs';
+import { pipeline } from 'node:stream/promises';
+import { Failure, equalSecret, read, uuid, webOrigins } from './http.mjs';
 import { nodAdapter } from './nod.mjs';
 import { compatibleAdapter } from './compatible.mjs';
+import { speechOutput, streamPocketAudio, transcriber } from './speech.mjs';
+import { spokenText } from './spoken-text.mjs';
 
 const e = process.env,
   kind = e.AGENT_BACKEND || 'nod',
@@ -47,8 +42,13 @@ const sessionValue =
     : '';
 const adapter =
   kind === 'nod'
-    ? nodAdapter({ base: e.NOD_BASE_URL || 'http://server:4310', authority })
+    ? nodAdapter({
+        base: e.NOD_BASE_URL || 'http://server:4310',
+        authority,
+        transcribe: e.STT_BASE_URL ? transcriber(e) : undefined,
+      })
     : compatibleAdapter(e, kind);
+const speak = speechOutput(e);
 const files = fileURLToPath(new URL('../web/', import.meta.url));
 const mime = {
   html: 'text/html; charset=utf-8',
@@ -110,6 +110,7 @@ function isWav(bytes) {
   );
 }
 const busy = new Set();
+const waiting = new Set();
 async function route(req, res, signal) {
   const path = new URL(req.url, 'http://localhost').pathname;
   if (path === '/health' && req.method === 'GET')
@@ -119,13 +120,16 @@ async function route(req, res, signal) {
       res.writeHead(303, { Location: '/' });
       return res.end();
     }
-    if (req.method === 'GET')
+    if (req.method === 'GET') {
+      // A no-referrer policy makes browsers send Origin: null on form POSTs.
+      res.setHeader('Referrer-Policy', 'same-origin');
       return send(
         res,
         200,
         '<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Anruf anmelden</title><main><h1>Anruf anmelden</h1><form method="post"><label>Zugangsschlüssel <input type="password" name="token" required autocomplete="current-password"></label> <button>Anmelden</button></form></main></html>',
         'text/html; charset=utf-8',
       );
+    }
     if (req.method === 'POST') {
       checkOrigin(req);
       const input = new URLSearchParams((await read(req, 1024)).toString());
@@ -172,6 +176,7 @@ async function route(req, res, signal) {
     return send(res, 200, {
       ok: true,
       agent: names[kind],
+      ...(e.TTS_ENGINE === 'pocket' ? { speechStream: true } : {}),
       chatUrl: e.CHAT_URL || (authMode === 'nod' ? '/' : null),
     });
   }
@@ -197,13 +202,31 @@ async function route(req, res, signal) {
       busy.delete(call);
     }
   }
-  if (action.startsWith('turn/') && req.method === 'GET')
-    return send(
-      res,
-      200,
-      await adapter.poll(action.slice(5), auth, signal, call),
-    );
-  if (action === 'speech' && req.method === 'POST') {
+  if (action.startsWith('turn/') && req.method === 'GET') {
+    const id = action.slice(5);
+    let turn = await adapter.poll(id, auth, signal, call);
+    if (
+      turn.state === 'working' &&
+      req.headers.prefer === 'wait=6' &&
+      !waiting.has(call) &&
+      waiting.size < 8
+    ) {
+      waiting.add(call);
+      try {
+        turn = await adapter.waitForTurn(id, auth, signal, call, turn);
+      } finally {
+        waiting.delete(call);
+      }
+    }
+    if (turn.state === 'reply' && typeof turn.text === 'string') {
+      const speechText = spokenText(turn.text);
+      if (speechText !== turn.text)
+        return send(res, 200, { ...turn, speechText });
+    }
+    return send(res, 200, turn);
+  }
+  const streamSpeech = action === 'speech/stream' && e.TTS_ENGINE === 'pocket';
+  if ((action === 'speech' || streamSpeech) && req.method === 'POST') {
     let input;
     try {
       input = JSON.parse((await read(req, 16_384)).toString());
@@ -217,11 +240,29 @@ async function route(req, res, signal) {
       input.text.length > 1600
     )
       throw new Failure(400, 'Ungültige Textlänge.');
-    const bytes = await request(
-      e.TTS_BASE_URL || 'http://call-tts:8090',
-      '/synthesize',
-      { ...jsonPost({ text: input.text }), signal, timeout: 90_000 },
-    );
+    if (streamSpeech) {
+      const chunks = streamPocketAudio(
+        e.TTS_BASE_URL || 'http://call-tts:8090',
+        input.text,
+        signal,
+      );
+      const first = await chunks.next();
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'X-Audio-Sample-Rate': '24000',
+        'X-Accel-Buffering': 'no',
+      });
+      async function* audio() {
+        try {
+          yield first.value;
+          yield* chunks;
+        } finally {
+          await chunks.return();
+        }
+      }
+      return pipeline(audio(), res, { signal });
+    }
+    const bytes = await speak(input.text, signal);
     return send(res, 200, bytes, 'audio/wav');
   }
   throw new Failure(404, 'Funktion nicht gefunden.');
@@ -240,7 +281,8 @@ export const app = http.createServer((req, res) => {
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
   );
   route(req, res, cancel.signal).catch((err) => {
-    if (res.destroyed || res.headersSent) return;
+    if (res.destroyed) return;
+    if (res.headersSent) return res.destroy();
     const known = err instanceof Failure;
     send(res, known ? err.status : 502, {
       error: known

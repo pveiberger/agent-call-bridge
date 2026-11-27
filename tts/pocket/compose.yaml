@@ -1,0 +1,11 @@
+services:
+  bridge:
+    environment:
+      TTS_ENGINE: pocket
+  call-tts:
+    build: ./tts/pocket
+    image: agent-call-pocket:local
+    mem_limit: 1200m
+    cpus: 3
+    logging:
+      driver: none

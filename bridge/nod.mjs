@@ -1,9 +1,28 @@
-import { Failure, json, multipart, request, uuid } from './http.mjs';
+import { createHash } from 'node:crypto';
+import { Failure, json, jsonPost, multipart, request, uuid } from './http.mjs';
+import { clarification, UnclearTranscription } from './speech.mjs';
+import { waitForNod } from './turn-wait.mjs';
 
-export function nodAdapter({ base, authority }) {
+export function nodAdapter({ base, authority, transcribe }) {
   const upstream = new URL(base);
   if (upstream.username || upstream.password)
     throw Error('NOD_BASE_URL must not include credentials');
+  // Keep only the binding for a rejected recording. Its spoken reply does
+  // not enter Nod's chat or cause any tool use. A retried upload is idempotent.
+  const clarifications = new Map();
+  function clarificationReceipt(messageId, callId, audio, remember = false) {
+    const prior = clarifications.get(messageId);
+    if (!prior && !remember) return;
+    const hash = createHash('sha256').update(audio).digest('hex');
+    if (prior) {
+      if (prior.callId !== callId || prior.hash !== hash)
+        throw new Failure(409, 'Beitrags-ID bereits belegt.');
+    } else {
+      clarifications.set(messageId, { callId, hash });
+      setTimeout(() => clarifications.delete(messageId), 60 * 60_000).unref();
+    }
+    return 'clarify.' + messageId;
+  }
   function api(path, auth, options = {}) {
     return json(base, path, {
       ...options,
@@ -34,7 +53,9 @@ export function nodAdapter({ base, authority }) {
         throw new Failure(401, 'Bitte bei Nod anmelden.');
       }
     },
-    async submit(audio, messageId, _call, auth, signal) {
+    async submit(audio, messageId, callId, auth, signal) {
+      const localId = clarificationReceipt(messageId, callId, audio);
+      if (localId) return localId;
       const state = await api('/api/state', auth, { signal });
       if (
         state.verificationRequests?.length ||
@@ -52,12 +73,37 @@ export function nodAdapter({ base, authority }) {
         text: '',
         attachmentIds: [],
       };
-      const recording = await multipart(
-        { message: JSON.stringify(message) },
-        audio,
-      );
-      const receipt = await api('/api/messages/audio', auth, {
-        ...recording,
+      let route = '/api/messages/audio';
+      let payload;
+      if (transcribe) {
+        let transcript;
+        try {
+          transcript = await transcribe(audio, signal);
+        } catch (error) {
+          if (!(error instanceof UnclearTranscription)) throw error;
+          return clarificationReceipt(messageId, callId, audio, true);
+        }
+        // Text-only chat commands have different semantics than a voice note.
+        if (transcript.startsWith('/'))
+          throw new Failure(409, 'Bitte gib Chatbefehle direkt im Chat ein.');
+        const current = await api('/api/state', auth, { signal });
+        if (
+          current.threadId !== state.threadId ||
+          current.chatClearedAt !== state.chatClearedAt ||
+          current.verificationRequests?.length ||
+          current.messages?.some((m) => m.approval?.state === 'pending')
+        )
+          throw new Failure(
+            409,
+            'Der Chat hat sich geändert. Bitte öffne Nod.',
+          );
+        route = '/api/messages';
+        payload = jsonPost({ ...message, text: transcript });
+      } else {
+        payload = await multipart({ message: JSON.stringify(message) }, audio);
+      }
+      const receipt = await api(route, auth, {
+        ...payload,
         signal,
         timeout: 135_000,
       });
@@ -70,8 +116,23 @@ export function nodAdapter({ base, authority }) {
       }
       return [state.threadId, receipt.turnId, messageId].join('.');
     },
-    async poll(id, auth, signal) {
+    waitForTurn(id, auth, signal, callId, initial) {
+      return waitForNod(
+        base,
+        { Host: authority, ...auth, Accept: 'text/event-stream' },
+        signal,
+        () => this.poll(id, auth, signal, callId),
+        initial,
+      );
+    },
+    async poll(id, auth, signal, callId) {
       const parts = id.split('.');
+      if (parts.length === 2 && parts[0] === 'clarify') {
+        const local = clarifications.get(parts[1]);
+        if (!local || local.callId !== callId)
+          throw new Failure(404, 'Gespräch nicht gefunden.');
+        return { state: 'reply', text: clarification };
+      }
       if (parts.length !== 3 || !parts.every((x) => uuid.test(x)))
         throw new Failure(404, 'Gespräch nicht gefunden.');
       const [threadId, originalTurn, messageId] = parts;

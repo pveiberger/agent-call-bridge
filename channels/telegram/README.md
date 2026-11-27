@@ -30,6 +30,8 @@ The container uses outbound Telegram MTProto signalling and WebRTC media, with n
 
 The implementation uses the incoming P2P call handler, external PCM record stream and timed audio-frame sender from the pinned PyTgCalls and NTgCalls SDKs. Local checks exercise the media conversion, conversation turn and caller checks. A real inter-account call requires both account holders and an authorized receiver session. [SDK incoming call example](https://github.com/pytgcalls/pytgcalls/blob/master/example/p2p_example/example_p2p.py) · [External media example](https://github.com/pytgcalls/pytgcalls/blob/master/example/bridged_calls/example_bridged.py)
 
+The adapter has no fixed maximum call length. After 60 seconds of listening without speech, it asks “Sind Sie noch da? Wenn ja, sprechen Sie jetzt.” You have 30 seconds after the prompt finishes to speak. The adapter hangs up if you remain silent, including when the caller's device sends no audio packets. Time spent processing your request or playing an answer does not count. Silence is handled on the server and does not generate a transcription or agent request.
+
 Run the offline checks from the `channels` directory.
 
 ```sh

@@ -32,6 +32,8 @@ docker compose -f compose.yaml -f channels/whatsapp/compose.yaml --profile whats
 
 Die interne Bridge stellt Spracherkennung, die Antwort des ausgewählten Assistenten und deutsche Sprachausgabe bereit. Verlangt der Assistent eine Bestätigung, verweist der Adapter auf den Chat. Er verarbeitet einen Anruf gleichzeitig. Ein Neustart beendet den laufenden Anruf.
 
+Der Adapter hat keine feste Höchstdauer. Nach 60 Sekunden ohne erkennbare Sprache beim Zuhören fragt er „Sind Sie noch da? Wenn ja, sprechen Sie jetzt.“ Nach dem letzten Wort der Ansage bleiben 30 Sekunden zum Antworten. Bei anhaltender Stille beendet der Adapter den WhatsApp-Anruf, auch wenn keine Audiopakete mehr eintreffen. Während der Assistent arbeitet oder spricht, pausiert die Frist. Stille löst keine Transkription und keine Anfrage an den Assistenten aus.
+
 ## Lokale Prüfung
 
 Diese Befehle im Verzeichnis `channels` bauen das Image und prüfen Challenge, signierte Webhooks, Anruferfilter, doppelte Zustellungen sowie Medien in beide Richtungen zwischen zwei lokalen WebRTC-Peers. Der Test verwendet simulierte Gegenstellen für die Graph API und den Assistenten.

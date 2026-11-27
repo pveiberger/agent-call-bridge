@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"math"
 	"os"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -14,7 +16,7 @@ func TestSpeechEndsOnPauseWithVariablePackets(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	result := make(chan []byte, 1)
-	go func() { data, _ := input.listen(ctx); result <- data }()
+	go func() { data, _ := input.listen(ctx, time.Minute); result <- data }()
 	for !input.active.Load() {
 		select {
 		case <-ctx.Done():
@@ -36,8 +38,8 @@ func TestSpeechEndsOnPauseWithVariablePackets(t *testing.T) {
 			samples = append(samples, float32(int16(binary.LittleEndian.Uint16(pcm[i:])))/32768)
 		}
 	} else {
-		for i := 0; i < 16000; i++ {
-			samples = append(samples, float32(math.Sin(2*math.Pi*220*float64(i)/16000)*(0.35+0.15*math.Sin(float64(i)/283))))
+		for i := range 50 {
+			samples = append(samples, voiceFrame(i)...)
 		}
 	}
 	// Meowcaller's playout aligns frames to actual RTP timestamps.
@@ -60,4 +62,153 @@ func TestSpeechEndsOnPauseWithVariablePackets(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("Silence did not finish the utterance")
 	}
+}
+
+func TestInactivityAfterPromptPlaybackWithSilentRTPAndDTX(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		mic := &microphone{input: make(chan []byte, 16)}
+		start := time.Now()
+		var prompts atomic.Int32
+		done := make(chan error, 1)
+		go func() {
+			done <- runTurns(t.Context(), mic, func(text string) error {
+				if text != presencePrompt {
+					return nil // greeting
+				}
+				prompts.Add(1)
+				if mic.active.Load() || time.Since(start) != time.Minute {
+					t.Error("Presence prompt did not follow one minute of listening")
+				}
+				// A delayed prompt and its echo must never enter the recognition path.
+				mic.put(voiceFrame(0))
+				time.Sleep(40 * time.Second)
+				return nil
+			}, func(context.Context, []byte) (string, bool, error) {
+				t.Error("Silence sent a turn to the assistant")
+				return "", false, nil
+			})
+		}()
+		synctest.Wait()
+		time.Sleep(59 * time.Second)
+		mic.put(make([]float32, 960))
+		synctest.Wait()
+		if !mic.active.Load() || prompts.Load() != 0 {
+			t.Fatal("An RTP silence packet disturbed the initial listening window")
+		}
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if prompts.Load() != 1 || mic.active.Load() {
+			t.Fatal("Expected one prompt with muted microphone")
+		}
+		time.Sleep(40 * time.Second)
+		synctest.Wait()
+		if !mic.active.Load() {
+			t.Fatal("Microphone did not reopen when the presence prompt finished")
+		}
+		time.Sleep(29 * time.Second)
+		synctest.Wait()
+		if !mic.active.Load() {
+			t.Fatal("Did not give the caller 30 seconds to answer")
+		}
+		time.Sleep(time.Second)
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if err != nil || prompts.Load() != 1 || mic.active.Load() {
+				t.Fatal("Inactive call must finish cleanly once")
+			}
+		default:
+			t.Fatal("Call handler did not return to native hangup")
+		}
+	})
+}
+
+func voiceFrame(seq int) []float32 {
+	frame := make([]float32, 320)
+	for i := range frame {
+		seconds := float64(seq*len(frame)+i) / 16000
+		envelope := 0.04 + 0.96*math.Pow(math.Sin(2*math.Pi*3*seconds), 2)
+		phase := 2 * math.Pi * (160*seconds + 0.35*math.Sin(2*math.Pi*4*seconds))
+		// The harmonics and the moving vowel envelope represent a syllable.
+		frame[i] = float32(0.22 * envelope * (math.Sin(phase) + 0.6*math.Sin(4*phase) + 0.65*math.Sin(8*phase) + 0.35*math.Sin(11*phase)))
+	}
+	return frame
+}
+
+func TestActiveConversationBeyondTwoHoursAndSpeechAtGraceDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		mic := &microphone{input: make(chan []byte, 16)}
+		start := time.Now()
+		var submissions, prompts atomic.Int32
+		done := make(chan error, 1)
+		go func() {
+			done <- runTurns(t.Context(), mic, func(text string) error {
+				if text == presencePrompt {
+					prompts.Add(1)
+				}
+				return nil
+			}, func(_ context.Context, wav []byte) (string, bool, error) {
+				if len(wav) < 44+8000 || mic.active.Load() {
+					t.Error("Expected speech WAV and muted input while processing")
+				}
+				submissions.Add(1)
+				time.Sleep(90 * time.Second) // agent processing is outside the listening window
+				return "Verstanden.", false, nil
+			})
+		}()
+		synctest.Wait()
+		for turn := 0; turn < 54; turn++ {
+			if turn == 0 {
+				time.Sleep(time.Minute)
+				synctest.Wait()
+				time.Sleep(30*time.Second - 20*time.Millisecond)
+			} else {
+				time.Sleep(50 * time.Second)
+			}
+			for i := 0; i < 24; i++ {
+				mic.put(voiceFrame(i))
+				synctest.Wait()
+				time.Sleep(20 * time.Millisecond)
+			}
+			time.Sleep(endSilence)
+			synctest.Wait()
+			if submissions.Load() != int32(turn+1) {
+				t.Fatalf("Lost utterance at turn %d", turn+1)
+			}
+			time.Sleep(90 * time.Second)
+			synctest.Wait()
+		}
+		if time.Since(start) < 2*time.Hour || prompts.Load() != 1 {
+			t.Fatal("Long active conversation was interrupted")
+		}
+		time.Sleep(90 * time.Second)
+		synctest.Wait()
+		if prompts.Load() != 2 || <-done != nil {
+			t.Fatal("A new full inactivity window should close the call")
+		}
+	})
+}
+
+func TestSpeechSynthesisOverlapsPlaybackInOrder(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		first := "Der erste Satz ist lang genug."
+		second := "Der zweite Satz folgt."
+		var spoken []string
+		start := time.Now()
+		var secondRequested time.Duration
+		err := speak(t.Context(), first+" "+second, func(_ context.Context, text string) ([]byte, error) {
+			if text == second {
+				secondRequested = time.Since(start)
+			}
+			time.Sleep(time.Second)
+			return []byte(text), nil
+		}, func(data []byte) error {
+			spoken = append(spoken, string(data))
+			time.Sleep(5 * time.Second)
+			return nil
+		})
+		if err != nil || len(spoken) != 2 || spoken[0] != first || spoken[1] != second || secondRequested != time.Second {
+			t.Fatalf("Speech pipeline out of order or not overlapped: %v, %v, %s", err, spoken, secondRequested)
+		}
+	})
 }

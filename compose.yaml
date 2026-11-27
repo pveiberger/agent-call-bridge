@@ -22,6 +22,10 @@ services:
       STT_BASE_URL: ${STT_BASE_URL:-}
       STT_API_KEY: ${STT_API_KEY:-}
       STT_MODEL: ${STT_MODEL:-}
+      STT_PROMPT: ${STT_PROMPT:-}
+      STT_WHISPER_SHORT_CONTEXT: ${STT_WHISPER_SHORT_CONTEXT:-false}
+      STT_FAST_BASE_URL: ${STT_FAST_BASE_URL:-}
+      TTS_ENGINE: ${TTS_ENGINE:-piper}
     ports:
       - "127.0.0.1:8091:8091"
     networks: [agents, speech]

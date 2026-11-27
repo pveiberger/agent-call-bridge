@@ -11,13 +11,14 @@ import unittest
 import uuid
 import wave
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+from aiohttp import ClientSession, web
 from aiohttp.test_utils import TestClient, TestServer
 from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 
 from adapter import Adapter, Call
-from media import RATE, encode_wave
+from media import IDLE_PROMPT, RATE, encode_wave
 from playback import ReplyTrack
 
 
@@ -71,7 +72,32 @@ class WhatsAppProtocolTests(unittest.IsolatedAsyncioTestCase):
             adapter.dispatch(item)
             self.assertFalse(adapter.calls)
 
+    async def test_no_incoming_audio_prompts_then_terminates_meta_call(self):
+        cfg = SimpleNamespace(rtc=RTCConfiguration(iceServers=[]))
+        call = Call(SimpleNamespace(config=cfg), packet()["entry"][0]["changes"][0]["value"]["calls"][0])
+        await call.peer.close()
+        call.peer = SimpleNamespace(on=lambda _: lambda f: f, setRemoteDescription=AsyncMock(),
+                                    addTrack=lambda _: None, setLocalDescription=AsyncMock(),
+                                    createAnswer=AsyncMock(), localDescription=SimpleNamespace(sdp="test"),
+                                    close=AsyncMock())
+        call.ready.set()
+        call.control = AsyncMock()
+        call.say = AsyncMock()
+        call.converse = AsyncMock()
+        with patch("media.IDLE_SECONDS", 0.025), patch("media.REPLY_SECONDS", 0.015):
+            await asyncio.wait_for(call.run(), 1)
+        call.say.assert_awaited_once_with(IDLE_PROMPT)
+        call.converse.assert_not_awaited()
+        self.assertEqual([c.args[0] for c in call.control.await_args_list],
+                         ["pre_accept", "accept", "terminate"])
+
     async def test_webrtc_and_conversation(self):
+        await self.webrtc_conversation(streaming=False)
+
+    async def test_webrtc_speech_reaches_caller_while_http_is_still_streaming(self):
+        await self.webrtc_conversation(streaming=True)
+
+    async def webrtc_conversation(self, streaming):
         """Real ICE, DTLS, SRTP and Opus between two local peers; no external signaling."""
         config = RTCConfiguration(iceServers=[])
         caller = RTCPeerConnection(config)
@@ -114,13 +140,46 @@ class WhatsAppProtocolTests(unittest.IsolatedAsyncioTestCase):
                 received.append(str(uuid.UUID(kwargs["headers"]["X-Request-Id"])))
                 return {"id": turn}
             if path == "/channel/turn/" + turn:
-                return {"state": "reply", "text": "Antwort."}
+                return {"state": "reply", "text": "[Intern](https://private.example/fixture)", "speechText": "Antwort."}
             self.assertEqual((path, kwargs["json"]), ("/channel/speech", {"text": "Antwort."}))
             return tone_wave
         call.bridge = bridge
+        if streaming:
+            async def stream(req):
+                self.assertEqual(req.headers["Authorization"], "Bearer fixture")
+                self.assertEqual(req.headers["X-Call-Id"], call.id)
+                self.assertEqual(await req.json(), {"text": "Antwort."})
+                response = web.StreamResponse(headers={"Content-Type": "application/octet-stream",
+                                                       "X-Audio-Sample-Rate": "24000"})
+                await response.prepare(req)
+                data = struct.pack("<12000h", *(int(10000 * math.sin(i / 11)) for i in range(12000)))
+                await response.write(data[:17])
+                await response.write(data[17:])
+                await asyncio.wait_for(heard.wait(), 3)
+                return response
+
+            app = web.Application()
+            app.router.add_post("/channel/speech/stream", stream)
+            server = await self.enterAsyncContext(TestServer(app))
+            call.adapter.http = await self.enterAsyncContext(ClientSession())
+            call.adapter.config.bridge = str(server.make_url("/")).rstrip("/")
+            call.adapter.config.bridge_secret = "fixture"
+        else:
+            call.playback.supported = False
         job = asyncio.create_task(call.run())
         try:
             await asyncio.wait_for(accepted.wait(), 8)
+            if not streaming:
+                # Transport the fan through the same Opus/DTLS path as caller speech.
+                state, low, samples = 55, 0.0, []
+                for i in range(2 * RATE):
+                    state = (state * 1664525 + 1013904223) & 0xffffffff
+                    low = 0.85 * low + 0.15 * (state / 2**31 - 1)
+                    value = 0.032 * math.sin(2 * math.pi * 145 * i / RATE) + 0.015 * low
+                    samples.append(int(32767 * value))
+                await microphone.play(encode_wave(struct.pack("<" + str(len(samples)) + "h", *samples)))
+                await asyncio.sleep(1.1)
+                self.assertEqual(received, [])
             fixture = os.environ.get("WA_TEST_AUDIO")
             if fixture:
                 with open(fixture, "rb") as src:

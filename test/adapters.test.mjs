@@ -265,6 +265,12 @@ test('all Nod cookie routes require a private upstream and an authenticated owne
     '/api/session',
     '/api/state',
   ]);
+  const original = '[Arzttermin](https://example.org/privater-kalender) am 23. Juni.';
+  state.messages[1].text = original;
+  const formatted = await fetch(api + pollPath, { headers });
+  assert.deepEqual(await formatted.json(), {
+    state: 'reply', text: original, speechText: 'Arzttermin am 23. Juni.',
+  });
   assert.equal(
     (
       await fetch(api + pollPath, {
@@ -287,7 +293,7 @@ test('compatible adapter limits in-flight jobs across calls and releases failed 
   const url = await fixture(t, async (req) => {
     if (req.url === '/audio/transcriptions') {
       await gate;
-      return { text: healthy ? 'Hallo.' : '' };
+      return healthy ? { text: 'Hallo.' } : { error: 'provider unavailable' };
     }
     return {
       choices: [{ finish_reason: 'stop', message: { content: 'Hallo.' } }],

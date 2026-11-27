@@ -1,0 +1,25 @@
+services:
+  bridge:
+    environment:
+      STT_BASE_URL: http://call-stt:8093/v1
+      STT_MODEL: whisper-large-v3-turbo
+      STT_PROMPT: ${STT_PROMPT:-}
+      STT_API_KEY: ""
+    depends_on:
+      call-stt:
+        condition: service_healthy
+  call-stt:
+    profiles: [local-stt]
+    build: ./stt
+    image: agent-call-stt:cpu
+    restart: unless-stopped
+    networks: [speech]
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    init: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 4g
+    pids_limit: 128
+    logging:
+      driver: none

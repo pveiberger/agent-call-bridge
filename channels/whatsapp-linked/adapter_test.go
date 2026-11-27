@@ -73,7 +73,7 @@ func TestLocalBridgeTurnAndAudio(t *testing.T) {
 			if pollCount == 1 {
 				s = "working"
 			}
-			_ = json.NewEncoder(w).Encode(map[string]string{"state": s, "text": reply})
+			_ = json.NewEncoder(w).Encode(map[string]string{"state": s, "text": "[Dokument](https://example.org/)", "speechText": reply})
 		case "POST /channel/speech":
 			speechCount++
 			var q struct{ Text string }

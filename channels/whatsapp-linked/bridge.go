@@ -31,13 +31,16 @@ func newBridge(base, secret string) (*bridge, error) {
 	return &bridge{strings.TrimRight(base, "/"), secret, &http.Client{Timeout: 145 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 
-func (b *bridge) request(ctx context.Context, method, path, callID, requestID, contentType string, body []byte, limit int64) ([]byte, error) {
+func (b *bridge) open(ctx context.Context, method, path, callID, requestID, contentType string, body []byte) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, b.base+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+b.secret)
 	req.Header.Set("X-Call-Id", callID)
+	if method == http.MethodGet && strings.HasPrefix(path, "/channel/turn/") {
+		req.Header.Set("Prefer", "wait=6")
+	}
 	if requestID != "" {
 		req.Header.Set("X-Request-Id", requestID)
 	}
@@ -47,6 +50,14 @@ func (b *bridge) request(ctx context.Context, method, path, callID, requestID, c
 	res, err := b.http.Do(req)
 	if err != nil {
 		return nil, errors.New("Bridge is unavailable")
+	}
+	return res, nil
+}
+
+func (b *bridge) request(ctx context.Context, method, path, callID, requestID, contentType string, body []byte, limit int64) ([]byte, error) {
+	res, err := b.open(ctx, method, path, callID, requestID, contentType, body)
+	if err != nil {
+		return nil, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
@@ -69,25 +80,30 @@ func (b *bridge) turn(ctx context.Context, callID string, wav []byte) (string, b
 		return "", false, errors.New("Invalid turn ID")
 	}
 	path := "/channel/turn/" + url.PathEscape(receipt.ID)
+	delay := 250 * time.Millisecond
 	for {
 		data, err := b.request(ctx, "GET", path, callID, "", "", nil, 1<<20)
 		if err != nil {
 			return "", false, err
 		}
-		var answer struct{ State, Text string }
+		var answer struct{ State, Text, SpeechText string }
 		if json.Unmarshal(data, &answer) != nil {
 			return "", false, errors.New("Invalid turn state")
 		}
 		switch answer.State {
 		case "working":
 			select {
-			case <-time.After(800 * time.Millisecond):
+			case <-time.After(delay):
+				delay = min(delay*2, time.Second)
 			case <-ctx.Done():
 				return "", false, ctx.Err()
 			}
 		case "approval":
 			return "", true, nil
 		case "reply":
+			if strings.TrimSpace(answer.SpeechText) != "" {
+				return answer.SpeechText, false, nil
+			}
 			if strings.TrimSpace(answer.Text) != "" {
 				return answer.Text, false, nil
 			}

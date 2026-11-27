@@ -1,0 +1,13 @@
+services:
+  bridge:
+    environment:
+      STT_FAST_BASE_URL: http://call-fast-stt:8093/v1
+    depends_on:
+      call-fast-stt:
+        condition: service_started
+  call-fast-stt:
+    extends:
+      file: stt/parakeet/compose.yaml
+      service: call-stt
+    build: ./stt/parakeet
+    profiles: [local-stt]

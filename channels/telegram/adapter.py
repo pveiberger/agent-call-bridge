@@ -20,7 +20,7 @@ from pytgcalls.types import ExternalMedia, MediaStream, RecordStream
 from pytgcalls.types.raw import AudioParameters
 from telethon import TelegramClient
 
-from media import FRAME, RATE, Utterances
+from media import RATE, CallInput, SpeechPlayback
 
 CALL_RATE = 48_000
 CALL_AUDIO = AudioParameters(bitrate=CALL_RATE, channels=1)
@@ -34,19 +34,6 @@ def allowed_users(value):
     if not all(re.fullmatch(r"[1-9][0-9]{0,18}", user.strip()) for user in users):
         raise ValueError("TELEGRAM_ALLOWED_CALLERS requires positive numeric Telegram user IDs.")
     return frozenset(int(user) for user in users)
-
-
-def spoken_parts(text):
-    rest = " ".join(text.split())
-    while len(rest) > 450:
-        endings = list(re.finditer(r"[.!?;:]\s", rest[:450]))
-        split = endings[-1].end() if endings else rest.rfind(" ", 0, 450)
-        if split < 1:
-            split = 450
-        yield rest[:split].strip()
-        rest = rest[split:].lstrip()
-    if rest:
-        yield rest
 
 
 def telegram_pcm(wav_bytes):
@@ -70,13 +57,16 @@ class Call:
         self.adapter = adapter
         self.user = user
         self.id = str(uuid.uuid4())
-        self.ready = False
         self.remote_ended = False
         self.job = None
-        self.incoming = asyncio.Queue(maxsize=128)
+        self.input = CallInput()
+        self.playback = SpeechPlayback()
+        self.resampler = None
 
     async def bridge(self, method, path, **options):
         headers = {"Authorization": "Bearer " + self.adapter.secret, "X-Call-Id": self.id}
+        if method == "GET" and path.startswith("/channel/turn/"):
+            headers["Prefer"] = "wait=6"
         headers.update(options.pop("headers", {}))
         async with self.adapter.http.request(method, self.adapter.bridge_url + path, headers=headers,
                                              allow_redirects=False, **options) as response:
@@ -85,16 +75,31 @@ class Call:
             return await response.read() if path == "/channel/speech" else await response.json()
 
     async def speak(self, text):
-        for part in spoken_parts(text):
-            raw = await self.bridge("POST", "/channel/speech", json={"text": part})
-            pcm = telegram_pcm(raw)
-            next_frame = time.monotonic()
+        def open_stream(part):
+            return self.adapter.http.post(
+                self.adapter.bridge_url + "/channel/speech/stream", json={"text": part},
+                headers={"Authorization": "Bearer " + self.adapter.secret, "X-Call-Id": self.id},
+                allow_redirects=False)
+
+        async def synthesize(part):
+            return await self.bridge("POST", "/channel/speech", json={"text": part})
+
+        next_frame = time.monotonic()
+
+        async def play_pcm(pcm):
+            nonlocal next_frame
             for pos in range(0, len(pcm), FRAME_BYTES):
+                next_frame = max(next_frame, time.monotonic())
                 await asyncio.sleep(max(0, next_frame - time.monotonic()))
                 frame = pcm[pos:pos + FRAME_BYTES].ljust(FRAME_BYTES, b"\0")
                 await self.adapter.calls.send_frame(self.user, Device.MICROPHONE, frame)
-                next_frame = max(next_frame + 0.01, time.monotonic())
-        await asyncio.sleep(0.32)
+                next_frame += 0.01
+
+        async def play_wav(raw):
+            await play_pcm(telegram_pcm(raw))
+
+        await self.playback.speak(text, open_stream, CALL_RATE, play_pcm, synthesize, play_wav)
+        await asyncio.sleep(0.22)
 
     async def reply(self, audio):
         sent = await self.bridge("POST", "/channel/utterance", data=audio, headers={
@@ -103,43 +108,20 @@ class Call:
         turn = sent["id"]
         if not isinstance(turn, str) or not turn or len(turn) > 512 or turn in (".", ".."):
             raise ValueError("Invalid bridge turn ID.")
+        interval = 0.22
         while True:
             result = await self.bridge("GET", "/channel/turn/" + quote(turn, safe=""))
             if result["state"] == "working":
-                await asyncio.sleep(0.85)
+                await asyncio.sleep(interval)
+                interval = min(1, interval * 1.6)
                 continue
             if result["state"] == "approval":
                 await self.speak("Bitte öffne den Hauptchat, um die Freigabe zu prüfen.")
                 return False
             if result["state"] == "reply" and result.get("text"):
-                await self.speak(result["text"])
+                await self.speak(result.get("speechText") or result["text"])
                 return True
             raise RuntimeError("The assistant could not return a reply.")
-
-    async def listen(self):
-        detector = Utterances()
-        pending = bytearray()
-        state = None
-        while not self.incoming.empty():
-            self.incoming.get_nowait()
-        self.ready = True
-        try:
-            while True:
-                try:
-                    frame = await asyncio.wait_for(self.incoming.get(), timeout=0.15)
-                except TimeoutError:
-                    # DTX can omit frames during pauses. Deliver the equivalent
-                    # silence to VAD so a caller never needs a second sound.
-                    frame = bytes(CALL_RATE * 15 // 100 * 2)
-                converted, state = audioop.ratecv(frame, 2, 1, CALL_RATE, RATE, state)
-                pending.extend(converted)
-                while len(pending) >= FRAME * 2:
-                    utterance = detector.push(bytes(pending[:FRAME * 2]))
-                    del pending[:FRAME * 2]
-                    if utterance:
-                        return utterance
-        finally:
-            self.ready = False
 
     async def run(self):
         connected = False
@@ -149,9 +131,9 @@ class Call:
                                               CallConfig(timeout=30))
                 await self.adapter.calls.record(self.user, RecordStream(True, CALL_AUDIO))
             connected = True
-            await self.speak("Hallo, du kannst jetzt sprechen.")
-            while True:
-                audio = await self.listen()
+            async with asyncio.timeout(35):
+                await self.speak("Hallo, du kannst jetzt sprechen.")
+            while (audio := await self.input.listen(self.speak)) is not None:
                 async with asyncio.timeout(360):
                     if not await self.reply(audio):
                         break
@@ -164,7 +146,6 @@ class Call:
                     async with asyncio.timeout(12):
                         await self.speak("Öffne bitte den Hauptchat. Die Sprachverbindung ist unterbrochen.")
         finally:
-            self.ready = False
             if not self.remote_ended:
                 with contextlib.suppress(Exception):
                     async with asyncio.timeout(8):
@@ -200,11 +181,13 @@ class Adapter:
 
     async def frames(self, _calls, update):
         session = self.active
-        if not session or not session.ready or session.user != update.chat_id:
+        if not session or not session.input.listening or session.user != update.chat_id:
             return
         for item in update.frames:
-            if item.frame and len(item.frame) % 2 == 0 and not session.incoming.full():
-                session.incoming.put_nowait(item.frame)
+            if item.frame and len(item.frame) % 2 == 0:
+                pcm, session.resampler = audioop.ratecv(item.frame, 2, 1, CALL_RATE, RATE,
+                                                         session.resampler)
+                session.input.feed(pcm)
 
     def register(self):
         self.calls.on_update(filters.chat_update(ChatUpdate.Status.INCOMING_CALL))(self.incoming_call)

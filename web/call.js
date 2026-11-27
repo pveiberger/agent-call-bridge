@@ -1,7 +1,9 @@
 import { VoiceDetector } from "./vad.js";
+import { playPcmSpeech } from "./pcm.js";
 
 const $ = (id) => document.getElementById(id);
 const toggle = $("toggle");
+const presencePrompt = "Sind Sie noch da? Wenn ja, sprechen Sie jetzt.";
 let active = null;
 let agent = "Nod";
 let chatUrl = "/";
@@ -47,6 +49,7 @@ function end(phase, status, detail, showChat = false) {
   const call = active;
   active = null;
   if (call) {
+    stopSilenceTimer(call);
     call.controller.abort();
     call.listen?.(false);
     call.stream?.getTracks().forEach((track) => track.stop());
@@ -75,9 +78,10 @@ function check(call) {
 }
 
 class CallError extends Error {
-  constructor(message, chat = false) {
+  constructor(message, chat = false, status) {
     super(message);
     this.chat = chat;
+    this.status = status;
   }
 }
 
@@ -107,7 +111,26 @@ async function request(call, path, options = {}) {
     error ||
       agent + " ist gerade nicht erreichbar. Du kannst den Anruf neu starten.",
     true,
+    response.status,
   );
+}
+
+async function readStatus(call, path, headers) {
+  // These GETs have no side effects. A dropped connection can also interrupt the JSON body.
+  const read = async () => (await request(call, path, { headers })).json();
+  try {
+    return await read();
+  } catch (error) {
+    check(call);
+    if (
+      !(error instanceof TypeError) &&
+      error.name !== "NetworkError" &&
+      ![502, 503, 504].includes(error.status)
+    )
+      throw error;
+    await pause(call, 300);
+    return read();
+  }
 }
 
 function pause(call, milliseconds) {
@@ -126,7 +149,52 @@ function pause(call, milliseconds) {
   });
 }
 
-function arm(call) {
+function stopSilenceTimer(call) {
+  clearTimeout(call.silenceTimer);
+  call.silenceDeadline = null;
+}
+
+function waitForSpeech(call, afterPrompt = false) {
+  stopSilenceTimer(call);
+  const delay = afterPrompt ? 30_000 : 60_000;
+  const deadline = {
+    at: performance.now() + delay,
+    expire() {
+      if (active !== call || call.silenceDeadline !== deadline) return;
+      stopSilenceTimer(call);
+      if (afterPrompt) {
+        end("idle", "Anruf beendet", "Es war keine Antwort mehr zu hören.");
+        return;
+      }
+      askIfPresent(call).catch((error) => finishError(call, error));
+    },
+  };
+  call.silenceDeadline = deadline;
+  call.silenceTimer = setTimeout(deadline.expire, delay);
+}
+
+function mute(call) {
+  stopSilenceTimer(call);
+  call.listen(false);
+  for (const track of call.stream.getAudioTracks()) track.enabled = false;
+}
+
+function waitForSpeaker(call) {
+  // Web Audio can finish rendering before a Bluetooth speaker plays its tail.
+  const latencyMs = (call.context.outputLatency || 0) * 1000;
+  return pause(call, Math.max(160, Math.min(500, latencyMs + 60)));
+}
+
+async function askIfPresent(call) {
+  mute(call);
+  present("speaking", agent + " fragt nach", presencePrompt);
+  call.presenceAudio ??= await speechAudio(call, presencePrompt);
+  await playback(call, call.presenceAudio);
+  await waitForSpeaker(call);
+  arm(call, true);
+}
+
+function arm(call, afterPrompt = false) {
   check(call);
   call.stream.getAudioTracks().forEach((track) => {
     track.enabled = true;
@@ -135,8 +203,11 @@ function arm(call) {
   present(
     "listening",
     "Ich höre zu",
-    "Sprich jetzt. Nach einer kurzen Sprechpause übernimmt " + agent + ".",
+    afterPrompt
+      ? presencePrompt
+      : "Sprich jetzt. Nach einer kurzen Sprechpause übernimmt " + agent + ".",
   );
+  waitForSpeech(call, afterPrompt);
 }
 
 function finishError(call, error) {
@@ -197,6 +268,7 @@ async function capture(call) {
     if (active !== call) return;
     const phase = document.body.dataset.phase;
     if (phase !== "listening" && phase !== "capturing") return;
+    if (data.type === "activity") waitForSpeech(call);
     if (data.type === "voice")
       present(
         "capturing",
@@ -245,15 +317,28 @@ async function capture(call) {
     .connect(mute)
     .connect(ctx.destination);
   if (ctx.state !== "running") await ctx.resume();
-  if (document.hidden) {
-    end(
-      "idle",
-      "Anruf pausiert",
-      "Halte die Anrufseite im Vordergrund. Zum Fortsetzen erneut starten.",
-    );
-    return;
-  }
   arm(call);
+}
+
+function keepScreenAwake(call) {
+  if (
+    !navigator.wakeLock ||
+    document.hidden ||
+    call.lockPending ||
+    (call.lock && !call.lock.released)
+  )
+    return;
+  call.lockPending = true;
+  navigator.wakeLock
+    .request("screen")
+    .then((lock) => {
+      if (active === call) call.lock = lock;
+      else lock.release().catch(() => {});
+    })
+    .catch(() => {})
+    .finally(() => {
+      call.lockPending = false;
+    });
 }
 
 async function begin() {
@@ -293,8 +378,11 @@ async function begin() {
     unlock.onended = () => unlock.disconnect();
     unlock.start();
     await resume;
-    const auth = await (await request(call, "session")).json();
+    const auth = await readStatus(call, "session");
+    check(call);
     if (!auth.ok) throw new CallError("Melde dich zuerst an.", "login");
+    call.speechStream =
+      auth.speechStream === true && typeof ReadableStream !== "undefined";
     sessionInfo(auth);
     ctx.onstatechange = () => {
       if (
@@ -311,47 +399,55 @@ async function begin() {
     };
     await capture(call);
     check(call);
-    if (navigator.wakeLock && !document.hidden) {
-      navigator.wakeLock
-        .request("screen")
-        .then((lock) => {
-          if (active === call) call.lock = lock;
-          else lock.release().catch(() => {});
-        })
-        .catch(() => {});
-    }
+    keepScreenAwake(call);
   } catch (error) {
     finishError(call, error);
   }
 }
 
 // Keep sentences together, with a firm limit on each TTS request.
-function speechParts(text) {
-  let remaining = text
-    .replace(/\[([^\]]+)\]\(https?:\/\/[^)]+\)/g, "$1")
-    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
-    .replace(/\*\*|__/g, "")
-    .trim();
+function speechParts(turn, streaming) {
+  // Older bridges return only chat text.
+  let remaining = (
+    turn.speechText ||
+    turn.text
+      .replace(/\[([^\]]+)\]\(https?:\/\/[^)]+\)/g, "$1")
+      .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+      .replace(/(\*\*|__)(\S[^\n]*?)\1/g, "$2")
+  ).trim();
   const result = [];
-  while (remaining.length > 460) {
-    const window = remaining.slice(0, 460);
+  // Streaming preserves longer passages. Buffered synthesis starts with a short phrase.
+  let limit = streaming ? 1450 : 180;
+  while (remaining.length > limit) {
+    const window = remaining.slice(0, limit);
     let at = 0;
     for (const match of window.matchAll(/[.!?](?:[”»“"])?\s+|\n+/g))
       at = match.index + match[0].length;
-    if (at < 150) at = window.lastIndexOf(" ");
-    if (at < 1) at = /[\uD800-\uDBFF]/.test(window.slice(-1)) ? 459 : 460;
+    if (at < 1) at = window.lastIndexOf(" ");
+    if (at < 1)
+      at = /[\uD800-\uDBFF]/.test(window.slice(-1)) ? limit - 1 : limit;
     result.push(remaining.slice(0, at).trim());
     remaining = remaining.slice(at).trimStart();
+    if (!streaming) limit = 460;
   }
   if (remaining) result.push(remaining);
   return result.filter(Boolean);
 }
 
-async function playback(call, bytes) {
+async function speechAudio(call, text) {
+  const response = await request(call, "speech", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  const bytes = await response.arrayBuffer();
+  check(call);
+  return call.context.decodeAudioData(bytes);
+}
+
+async function playback(call, buffer) {
   check(call);
   const ctx = call.context;
-  const buffer = await ctx.decodeAudioData(bytes);
-  check(call);
   const source = ctx.createBufferSource();
   source.buffer = buffer;
   source.connect(ctx.destination);
@@ -372,10 +468,7 @@ async function playback(call, bytes) {
 
 async function talk(call, wav) {
   check(call);
-  call.listen(false);
-  call.stream.getAudioTracks().forEach((track) => {
-    track.enabled = false;
-  });
+  mute(call);
   present(
     "working",
     agent + " antwortet gleich",
@@ -397,12 +490,14 @@ async function talk(call, wav) {
       true,
     );
   let turn;
+  let pollDelay = 300;
   while (true) {
-    turn = await (
-      await request(call, "turn/" + encodeURIComponent(submitted.id))
-    ).json();
+    turn = await readStatus(call, "turn/" + encodeURIComponent(submitted.id), {
+      Prefer: "wait=6",
+    });
     if (turn.state !== "working") break;
-    await pause(call, 950);
+    await pause(call, pollDelay);
+    pollDelay = Math.min(1000, pollDelay + 100);
   }
   check(call);
   if (turn.state === "approval") {
@@ -428,22 +523,41 @@ async function talk(call, wav) {
   }
   $("answer").textContent = turn.text;
   $("last").hidden = false;
-  for (const part of speechParts(turn.text)) {
-    const speech = await request(call, "speech", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: part }),
-    });
-    const bytes = await speech.arrayBuffer();
-    check(call);
+  const parts = speechParts(turn, call.speechStream);
+  const speaking = () =>
     present(
       "speaking",
       agent + " spricht",
       "Sobald die Antwort endet, bist du wieder dran.",
     );
-    await playback(call, bytes);
+  if (call.speechStream && parts.length) {
+    const open = (text) =>
+      request(call, "speech/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+    await playPcmSpeech(
+      call.context,
+      call.controller.signal,
+      parts,
+      open,
+      speaking,
+    );
+  } else if (parts.length) {
+    let audio = await speechAudio(call, parts[0]);
+    check(call);
+    speaking();
+    for (let i = 0; i < parts.length; i++) {
+      const next = parts[i + 1];
+      const [, prepared] = await Promise.all([
+        playback(call, audio),
+        next && speechAudio(call, next),
+      ]);
+      audio = prepared;
+    }
   }
-  await pause(call, 450);
+  await waitForSpeaker(call);
   arm(call);
 }
 
@@ -453,12 +567,12 @@ toggle.addEventListener("click", () => {
   else void begin();
 });
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden && active?.stream)
-    end(
-      "idle",
-      "Anruf pausiert",
-      "Halte die Anrufseite im Vordergrund. Zum Fortsetzen erneut starten.",
-    );
+  const call = active;
+  if (document.hidden || !call?.stream) return;
+  // A hidden tab may receive a throttled timer after the visible page resumes.
+  const deadline = call.silenceDeadline;
+  if (deadline && performance.now() >= deadline.at) deadline.expire();
+  if (active === call) keepScreenAwake(call);
 });
 window.addEventListener("pagehide", () => {
   if (active)

@@ -1,0 +1,30 @@
+services:
+  call-stt:
+    build:
+      args:
+        WHISPER_IMAGE: ghcr.io/ggml-org/whisper.cpp@sha256:d1626247c2ba13e59bf5ac5d50b93afa556e9fdf501e8c67b0790c89b4614ac2
+    image: agent-call-stt:nvidia
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,graphics,utility
+      VK_DRIVER_FILES: /etc/vulkan/icd.d/nvidia.json
+      __EGL_VENDOR_LIBRARY_FILENAMES: /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+    volumes:
+      - type: bind
+        source: ${NVIDIA_VULKAN_ICD:-/usr/share/vulkan/icd.d/nvidia_icd.json}
+        target: /etc/vulkan/icd.d/nvidia.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NVIDIA_EGL_VENDOR:-/usr/share/glvnd/egl_vendor.d/10_nvidia.json}
+        target: /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+        read_only: true
+        bind:
+          create_host_path: false
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

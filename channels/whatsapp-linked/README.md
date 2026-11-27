@@ -33,6 +33,12 @@ Dieser experimentelle Zugang verwendet die unabhängigen Implementierungen Hyper
 
    Rufe die zweite Nummer mit der WhatsApp-Sprachanruffunktion an. Nach der Begrüßung kannst du Deutsch sprechen. Bei einer Pause schickt der Adapter den Beitrag an den konfigurierten Assistenten und spielt anschließend dessen Antwort ab. Während der Wiedergabe pausiert die Spracheingabe. Freigaben bearbeitest du im regulären Chat.
 
+Ein aktives Gespräch hat im Adapter keine feste Höchstdauer. Wenn beim Zuhören eine Minute lang keine Sprache zu erkennen ist, fragt die Sprachausgabe „Sind Sie noch da? Wenn ja, sprechen Sie jetzt.“ Sobald die Ansage zu Ende ist, bleiben 30 Sekunden für eine Antwort. Erkennt der Adapter Sprache, läuft das Gespräch weiter. Bei weiterer Stille legt er auf. Während der Verarbeitung und Wiedergabe pausiert die Frist. Die Nachfrage verwendet einen festen Text und löst keinen Auftrag an den Assistenten aus.
+
+Mit der Pocket-Stimme beginnt die Wiedergabe, sobald der erste 60-ms-Audioabschnitt vorliegt. Die Bridge liefert 24-kHz-Audio, das der Adapter fortlaufend auf die 16 kHz des WhatsApp-Codecs umrechnet. Bei Piper und älteren Bridge-Versionen lädt der Adapter die Antwort satzweise als WAV. Auflegen beendet die laufende Audioübertragung.
+
+Die Erkennung vergleicht das Mikrofonsignal mit dem laufenden Hintergrundgeräusch. So kann die Stillefrist auch bei einem hörbaren Lüfter ablaufen. Bei leisen Antworten puffert der Adapter den Wortanfang und gibt das ursprüngliche Audiosignal an die Transkription weiter.
+
 ## Betrieb und Daten
 
 Der Container nutzt ausgehende Verbindungen zur WhatsApp-Infrastruktur und das private Docker-Netz der Bridge. Vor der Annahme prüft er den Absender des Signal-verschlüsselten Angebots und den zugehörigen Anrufer gegen die Freigabeliste. Er behandelt einen privaten eingehenden Sprachanruf gleichzeitig. Der Adapter hält die erkannten Sprachabschnitte im Arbeitsspeicher. Transkripte und Antworten unterliegen dem Speicherverhalten des gewählten Assistenten. [Nod, Hermes und OpenClaw](../../README.md)

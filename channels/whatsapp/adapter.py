@@ -17,7 +17,7 @@ from aiohttp import web
 from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
 from aiortc.mediastreams import MediaStreamError
 
-from media import FRAME, RATE, Utterances
+from media import RATE, CallInput, SpeechPlayback
 from playback import ReplyTrack
 
 
@@ -78,20 +78,6 @@ def authenticated_events(payload, config):
                     yield call
 
 
-def spoken_parts(text):
-    # The bridge accepts 1,600 characters per request. Prefer complete sentences.
-    text = text.strip()
-    while text:
-        if len(text) <= 500:
-            yield text
-            break
-        cuts = [m.end() for m in re.finditer(r"[.!?](?=\s)|\n", text[:500])]
-        space = text.rfind(" ", 0, 500)
-        end = cuts[-1] if cuts else (space if space > 0 else 500)
-        yield text[:end].strip()
-        text = text[end:].strip()
-
-
 class Call:
     def __init__(self, adapter, event):
         self.adapter = adapter
@@ -102,10 +88,12 @@ class Call:
         self.track = ReplyTrack()
         self.ended = asyncio.Event()
         self.ready = asyncio.Event()
+        self.input = CallInput()
+        self.playback = SpeechPlayback()
         self.remote_ended = False
         self.accepted = False
         self.receiver = None
-        self.turn = None
+        self.dialogue = None
         self.job = None
 
     async def control(self, action, answer=None):
@@ -142,13 +130,14 @@ class Call:
             await asyncio.wait_for(self.ready.wait(), 22)
             await self.control("accept", answer)
             self.accepted = True
-            await asyncio.wait_for(self.ended.wait(), 2 * 3600)
+            self.dialogue = asyncio.create_task(self.listen())
+            await self.ended.wait()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logging.warning("Call ended during processing (%s)", type(exc).__name__)
         finally:
-            tasks = [t for t in (self.receiver, self.turn) if t is not None]
+            tasks = [t for t in (self.receiver, self.dialogue) if t is not None]
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -160,22 +149,14 @@ class Call:
 
     async def receive(self, incoming):
         resampler = av.AudioResampler(format="s16", layout="mono", rate=RATE)
-        fifo = av.AudioFifo()
-        detector = Utterances()
         try:
             while True:
                 frame = await incoming.recv()
+                if not self.input.listening:
+                    continue
                 frame.pts = None
                 for converted in resampler.resample(frame):
-                    fifo.write(converted)
-                while fifo.samples >= FRAME:
-                    frame = fifo.read(FRAME)
-                    if not self.accepted or (self.turn and not self.turn.done()):
-                        detector.reset()
-                        continue
-                    clip = detector.push(bytes(frame.planes[0])[:FRAME * 2])
-                    if clip:
-                        self.turn = asyncio.create_task(self.converse(clip))
+                    self.input.feed(bytes(converted.planes[0])[:converted.samples * 2])
         except MediaStreamError:
             pass
         except Exception as exc:
@@ -183,9 +164,18 @@ class Call:
         finally:
             self.ended.set()
 
+    async def listen(self):
+        try:
+            while (clip := await self.input.listen(self.say)) is not None:
+                await self.converse(clip)
+        finally:
+            self.ended.set()
+
     async def bridge(self, method, path, **kwargs):
         cfg = self.adapter.config
         headers = {"Authorization": "Bearer " + cfg.bridge_secret, "X-Call-Id": self.id}
+        if method == "GET" and path.startswith("/channel/turn/"):
+            headers["Prefer"] = "wait=6"
         headers.update(kwargs.pop("headers", {}))
         async with self.adapter.http.request(method, cfg.bridge + path, headers=headers,
                                              allow_redirects=False, **kwargs) as res:
@@ -194,9 +184,19 @@ class Call:
             return await res.read() if path == "/channel/speech" else await res.json()
 
     async def say(self, text):
-        for part in spoken_parts(text):
-            raw = await self.bridge("POST", "/channel/speech", json={"text": part})
-            await self.track.play(raw)
+        cfg = self.adapter.config
+
+        def open_stream(part):
+            return self.adapter.http.post(
+                cfg.bridge + "/channel/speech/stream", json={"text": part},
+                headers={"Authorization": "Bearer " + cfg.bridge_secret, "X-Call-Id": self.id},
+                allow_redirects=False)
+
+        async def synthesize(part):
+            return await self.bridge("POST", "/channel/speech", json={"text": part})
+
+        await self.playback.speak(text, open_stream, RATE, self.track.play_pcm, synthesize, self.track.play)
+        await asyncio.sleep(0.22)
 
     async def converse(self, clip):
         try:
@@ -207,15 +207,17 @@ class Call:
                 if not isinstance(turn_id, str) or not 0 < len(turn_id) <= 1024 or turn_id in (".", ".."):
                     raise ValueError("Invalid bridge turn identifier")
                 turn_path = "/channel/turn/" + quote(turn_id, safe="")
+                interval = 0.22
                 while True:
                     item = await self.bridge("GET", turn_path)
                     if item["state"] != "working":
                         break
-                    await asyncio.sleep(0.9)
+                    await asyncio.sleep(interval)
+                    interval = min(1, interval * 1.6)
                 if item["state"] == "approval":
                     await self.say("Dein Assistent braucht deine Bestätigung. Bitte öffne seinen Chat.")
                 elif item["state"] == "reply" and item.get("text"):
-                    await self.say(item["text"])
+                    await self.say(item.get("speechText") or item["text"])
                 else:
                     raise RuntimeError("No reply")
         except asyncio.CancelledError:

@@ -72,7 +72,7 @@ class WhatsAppProtocolTests(unittest.IsolatedAsyncioTestCase):
             adapter.dispatch(item)
             self.assertFalse(adapter.calls)
 
-    async def test_no_incoming_audio_prompts_then_terminates_meta_call(self):
+    async def test_no_incoming_audio_terminates_meta_call(self):
         cfg = SimpleNamespace(rtc=RTCConfiguration(iceServers=[]))
         call = Call(SimpleNamespace(config=cfg), packet()["entry"][0]["changes"][0]["value"]["calls"][0])
         await call.peer.close()
@@ -84,15 +84,34 @@ class WhatsAppProtocolTests(unittest.IsolatedAsyncioTestCase):
         call.control = AsyncMock()
         call.say = AsyncMock()
         call.converse = AsyncMock()
-        with patch("media.IDLE_SECONDS", 0.025), patch("media.REPLY_SECONDS", 0.015):
+        with patch("media.IDLE_SECONDS", 0.025):
             await asyncio.wait_for(call.run(), 1)
-        call.say.assert_awaited_once_with(IDLE_PROMPT)
+        call.say.assert_awaited_once_with("Hi, hier ist Nod. Wie kann ich dir helfen?")
         call.converse.assert_not_awaited()
         self.assertEqual([c.args[0] for c in call.control.await_args_list],
                          ["pre_accept", "accept", "terminate"])
 
     async def test_webrtc_and_conversation(self):
         await self.webrtc_conversation(streaming=False)
+
+    async def test_hold_then_goodbye_after_check_in(self):
+        cfg = SimpleNamespace(rtc=RTCConfiguration(iceServers=[]))
+        call = Call(SimpleNamespace(config=cfg), packet()["entry"][0]["changes"][0]["value"]["calls"][0])
+        try:
+            call.input.capture = AsyncMock(side_effect=[b"wait", None, b"goodbye"])
+            call.bridge = AsyncMock(side_effect=[
+                {"id": "one"}, {"state": "reply", "callAction": "hold_call", "text": "Ich warte."},
+                {"id": "two"}, {"state": "reply", "callAction": "end_call", "text": "Bis dann!"},
+            ])
+            async def speak(_text):
+                self.assertFalse(call.ended.is_set())
+            call.say = AsyncMock(side_effect=speak)
+            await call.listen()
+            self.assertTrue(call.ended.is_set())
+            self.assertEqual([c.args[0] for c in call.input.capture.await_args_list], [30, 300, 30])
+            self.assertEqual([c.args[0] for c in call.say.await_args_list], ["Hi, hier ist Nod. Wie kann ich dir helfen?", "Ich warte.", IDLE_PROMPT, "Bis dann!"])
+        finally:
+            await call.peer.close()
 
     async def test_webrtc_speech_reaches_caller_while_http_is_still_streaming(self):
         await self.webrtc_conversation(streaming=True)
@@ -166,9 +185,18 @@ class WhatsAppProtocolTests(unittest.IsolatedAsyncioTestCase):
             call.adapter.config.bridge_secret = "fixture"
         else:
             call.playback.supported = False
+        say = call.say
+        greeted = asyncio.Event()
+        async def say_or_greet(text):
+            if text == "Hi, hier ist Nod. Wie kann ich dir helfen?":
+                greeted.set()
+                return
+            await say(text)
+        call.say = say_or_greet
         job = asyncio.create_task(call.run())
         try:
             await asyncio.wait_for(accepted.wait(), 8)
+            await asyncio.wait_for(greeted.wait(), 1)
             if not streaming:
                 # Transport the fan through the same Opus/DTLS path as caller speech.
                 state, low, samples = 55, 0.0, []

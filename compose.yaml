@@ -27,11 +27,13 @@ services:
       STT_FAST_BASE_URL: ${STT_FAST_BASE_URL:-}
       CALL_PREPARE_SHORT_SPEECH: ${CALL_PREPARE_SHORT_SPEECH:-false}
       CALL_REALTIME: ${CALL_REALTIME:-false}
+      CALLBACK_CHANNELS: ${CALLBACK_CHANNELS:-}
       CALL_TASK_PROJECT: ${CALL_TASK_PROJECT:-}
       TTS_ENGINE: ${TTS_ENGINE:-piper}
     ports:
       - "127.0.0.1:8091:8091"
     networks: [agents, speech]
+    volumes: [callback-attempts:/var/lib/callbacks]
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -56,3 +58,5 @@ networks:
   agents: {}
   speech:
     internal: true
+volumes:
+  callback-attempts: {}

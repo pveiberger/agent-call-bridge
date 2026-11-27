@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { waitForCompletion } from './turn-wait.mjs';
 import { Failure, json, jsonPost } from './http.mjs';
 import { transcriber, UnclearTranscription } from './speech.mjs';
+import { nativeCallReply } from '../web/call-intent.js';
 
 // Hermes accepts explicit OpenAI-format history. OpenClaw routes by session key.
 export function compatibleAdapter(env, kind) {
@@ -28,9 +29,14 @@ export function compatibleAdapter(env, kind) {
       for (const [key, value] of map) if (value.time < cutoff) map.delete(key);
   }, 60_000);
   prune.unref();
-  async function run(audio, id, callId, call, turn) {
+  async function run(audio, id, callId, call, turn, native) {
     try {
       const user = { role: 'user', content: await transcribe(audio) };
+      const control = native && nativeCallReply(user.content);
+      if (control) {
+        turn.result = control;
+        return;
+      }
       const headers = {
         Authorization: 'Bearer ' + env.AGENT_API_KEY,
         'Idempotency-Key': id,
@@ -85,7 +91,7 @@ export function compatibleAdapter(env, kind) {
     }
   }
   return {
-    async submit(audio, id, callId) {
+    async submit(audio, id, callId, _auth, _signal, native = false) {
       const hash = createHash('sha256').update(audio).digest('hex'),
         prev = turns.get(id) || delivered.get(id);
       if (prev) {
@@ -128,7 +134,7 @@ export function compatibleAdapter(env, kind) {
       };
       turns.set(id, turn);
       running++;
-      turn.done = run(audio, id, callId, call, turn);
+      turn.done = run(audio, id, callId, call, turn, native);
       return id;
     },
     async waitForTurn(id, auth, signal, callId) {

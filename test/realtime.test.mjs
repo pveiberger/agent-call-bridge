@@ -57,7 +57,7 @@ test('Nod handles project names, new tasks and marking tasks complete', () => {
   assert.ok(!requiresProject('Welche Aufgaben hat der Bundestag?', ''));
 });
 
-async function callRig(t, result = { state: 'reply', text: 'Ist erledigt.' }) {
+async function callRig(t, result = { state: 'reply', text: 'Ist erledigt.' }, callbackQuestion = '') {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const track = { enabled: true },
     scope = new AbortController(),
@@ -129,6 +129,7 @@ async function callRig(t, result = { state: 'reply', text: 'Ist erledigt.' }) {
   }
   t.after(() => scope.abort());
   const call = {
+    callbackQuestion,
     controller: scope,
     stream: { getAudioTracks: () => [track] },
     context: {
@@ -176,6 +177,16 @@ async function callRig(t, result = { state: 'reply', text: 'Ist erledigt.' }) {
       content: [{ type: 'output_audio', transcript: 'Vier.' }],
     },
   ];
+  const greeting = events.at(-1)?.response;
+  assert.equal(greeting?.metadata.stage, 'greeting');
+  assert.equal(greeting.tool_choice, 'none');
+  if (callbackQuestion) assert.ok(greeting.instructions.includes(callbackQuestion));
+  assert.equal(track.enabled, false);
+  finish('greeting', greeting.metadata.turn, 'hello', audio);
+  assert.equal(track.enabled, false);
+  emit({ type: 'output_audio_buffer.stopped', response_id: 'hello' });
+  assert.equal(track.enabled, true);
+  events.length = 0;
   return {
     mute(value) {
       call.userMuted = value;
@@ -194,6 +205,14 @@ async function callRig(t, result = { state: 'reply', text: 'Ist erledigt.' }) {
     ended: () => ended,
   };
 }
+
+test('an accepted callback routes a short answer into the existing Nod chat', async (t) => {
+  const r = await callRig(t, undefined, 'Soll ich den Termin verschieben?');
+  r.speak('owner-answer', 'Ja, bitte.');
+  await tick();
+  assert.equal(r.submissions.length, 1);
+  assert.equal(r.submissions[0].body, 'Ja, bitte.');
+});
 
 test('manual mute discards a partial turn and survives response playback', async (t) => {
   const r = await callRig(t);

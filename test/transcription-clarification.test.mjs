@@ -163,6 +163,25 @@ for (const kind of ['nod', 'hermes', 'openclaw']) {
           (e) => e.status === 404,
         );
       }
+      status = 200;
+      for (const [spoken, expected] of [
+        ['Ja, alles klar, danke dir, dann bis später.', 'end_call'],
+        ['Kannst du bitte noch kurz dranbleiben?', 'hold_call'],
+        ['Danke dir.', undefined],
+        ['Lege die Aufgabe „Bis später“ an.', undefined],
+      ]) {
+        result = { text: spoken };
+        const id = randomUUID();
+        const baseline = actions;
+        const local = await adapter.submit(audio, id, call, {}, undefined, true);
+        const answer = await poll(local);
+        assert.equal(answer.callAction, expected);
+        assert.equal(actions - baseline, expected ? 0 : 1);
+        if (expected) {
+          assert.equal(await adapter.submit(audio, id, call, {}, undefined, true), local);
+          await assert.rejects(() => adapter.poll(local, {}, undefined, randomUUID()));
+        }
+      }
     },
   );
 }

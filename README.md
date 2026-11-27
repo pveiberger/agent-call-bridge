@@ -11,9 +11,9 @@ Für deutsche OpenAI-Realtime-Anrufe im Nod-Browserchat benötigt Nod den Endpun
 | WhatsApp Business Platform | Eine für Calling freigeschaltete Cloud-API-Nummer anrufen | Öffentlicher HTTPS-Webhook, erreichbarer WebRTC-Medienpfad und zugelassene Anrufer. [Einrichtung](channels/whatsapp/README.md) |
 | Telegram | Ein eigens verbundenes Telegram-Benutzerkonto anrufen | MTProto-Anmeldung, persistente Sitzung und zugelassene numerische Anrufer-IDs. Ein bestehender Bot kann alternativ einen Button für den Browser-Anruf anbieten. [Einrichtung](channels/telegram/README.md) |
 
-Ein aktives Gespräch hat keine feste Gesamtdauer. Bei einem Realtime-Anruf mit Nod kannst du dich zum Auflegen einfach verabschieden, etwa mit „Alles klar, danke dir, dann bis später“. Nod verabschiedet sich kurz und legt nach seinem letzten Wort auf. Hört Nod beim Zuhören 30 Sekunden lang keine Sprache, endet der Anruf automatisch. Mit „Bleib bitte dran“ hast du fünf Minuten Zeit. Dann fragt Nod „Bist du noch da?“ und wartet nach der Frage weitere 30 Sekunden. Du kannst früher weitersprechen oder nochmals um fünf Minuten bitten.
+Ein aktives Gespräch hat keine feste Gesamtdauer. Bei einem Realtime-Anruf mit Nod und bei nativen WhatsApp- oder Telegram-Anrufen kannst du dich zum Auflegen einfach verabschieden, etwa mit „Alles klar, danke dir, dann bis später“. Nod verabschiedet sich kurz und legt nach seinem letzten Wort auf. Hört Nod beim Zuhören 30 Sekunden lang keine Sprache, endet der Anruf automatisch. Mit „Bleib bitte dran“ hast du fünf Minuten Zeit. Dann fragt Nod „Bist du noch da?“ und wartet nach der Frage weitere 30 Sekunden. Du kannst früher weitersprechen oder nochmals um fünf Minuten bitten.
 
-Bei Anrufen über die lokalen Sprachadapter fragt die Stimme nach 60 Sekunden Stille nach und wartet weitere 30 Sekunden auf eine Antwort. Verarbeitungszeit und Wiedergabe zählen bei beiden Varianten nicht als Stille.
+Bei Browseranrufen mit lokaler Sprachverarbeitung fragt die Stimme nach 60 Sekunden Stille nach und wartet weitere 30 Sekunden auf eine Antwort. Verarbeitungszeit und Wiedergabe zählen bei beiden Varianten nicht als Stille.
 
 Im Browser kann ein Gespräch bei einem Tabwechsel weiterlaufen, solange das Betriebssystem Mikrofon und Audio freigibt. Das Auflegen schließt das Mikrofon und beendet die Wiedergabe. Ein bereits übermittelter Auftrag kann im regulären Chat weiterlaufen.
 
@@ -131,3 +131,9 @@ Der Browsertest mit einer laufenden Nod-Instanz deckte deutsche Spracheingabe un
 ## Lizenz
 
 Der eigene Bridge-Code steht unter der [MIT-Lizenz](LICENSE). Für die mitgelieferte Schrift, die separat heruntergeladenen Sprachgewichte und die installierten Bibliotheken gelten deren eigene Lizenzen. [Schriftlizenz](web/Geist-OFL.txt) · [Stimme und Piper](tts/VOICE.md)
+
+## Urgent callbacks from Nod
+
+Nod greets the caller when the call connects. To let Nod call its owner about an unanswered question, set `CALLBACK_CHANNELS=whatsapp-linked,telegram,browser` in the bridge environment. Order determines priority among available channels. Enable `NOD_CALLBACKS=true` on each paired native adapter. The browser can offer calls while the signed-in Nod tab is visible and the microphone is free. Selecting **Annehmen** connects the call and Nod asks its question.
+
+Configure Nod’s personal rules to begin genuinely time-critical questions with **Dringende Rückfrage:**. After five minutes with no new user message, the bridge offers one call for that question. For an event the owner specifically asked to receive by phone, Nod can post **Angeforderter Anruf:** followed by the event and reason. That call is eligible on the next poll. The bridge expires both kinds of notice after one hour and stores the attempt ID in the private callback volume. Approvals and verification requests stay in chat.

@@ -263,7 +263,7 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
   async function capture(call, auth) {
     if (auth.realtime === true) {
       present("starting", "Es klingelt …", "Der Anruf verbindet dich mit OpenAI Realtime.");
-      call.ring = ringback(call.context, call.controller.signal);
+      call.ring = call.callbackQuestion ? Promise.resolve() : ringback(call.context, call.controller.signal);
     }
     const stream = await navigator.mediaDevices.getUserMedia({
       video: false,
@@ -373,6 +373,14 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
       .connect(mute)
       .connect(ctx.destination);
     if (ctx.state !== "running") await ctx.resume();
+    if (auth.greeting) {
+      const greeting = call.callbackQuestion || auth.greeting;
+      const audio = await speechAudio(call, greeting);
+      check(call);
+      present("speaking", agent + " spricht", "");
+      await playback(call, audio);
+      await waitForSpeaker(call);
+    }
     arm(call);
   }
 
@@ -417,7 +425,7 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
     }
   }
 
-  async function begin() {
+  async function begin(callbackQuestion) {
     if (active || disposed) return;
     hasStarted = true;
     const Audio = window.AudioContext || window.webkitAudioContext;
@@ -437,6 +445,7 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
     const call = {
       id: crypto.randomUUID(),
       userMuted: false,
+      callbackQuestion: typeof callbackQuestion === "string" ? callbackQuestion.slice(0, 600) : "",
       controller: new AbortController(),
       nodes: [],
     };
@@ -665,6 +674,19 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
 
   return {
     start: begin,
+    ringIncoming() {
+      const Audio = window.AudioContext || window.webkitAudioContext;
+      if (!Audio || active || disposed) return;
+      const ctx = new Audio();
+      const controller = new AbortController();
+      const quiet = () => {
+        controller.abort();
+        if (ctx.state !== "closed") void ctx.close().catch(() => {});
+      };
+      if (ctx.state === "running") void ringback(ctx, controller.signal).finally(quiet);
+      else quiet();
+      return quiet;
+    },
     stop,
     setMuted,
     dispose() {

@@ -41,7 +41,8 @@ const (
 	speechFrameBytes = 640 // 20 ms of mono PCM16 at 16 kHz
 	endSilenceFrames = 36
 	endSilence       = endSilenceFrames * 20 * time.Millisecond
-	presencePrompt   = "Sind Sie noch da? Wenn ja, sprechen Sie jetzt."
+	incomingGreeting = "Hi, hier ist Nod. Wie kann ich dir helfen?"
+	presencePrompt   = "Bist du noch da?"
 )
 
 // A nil utterance means the caller stayed silent for the whole listening window.
@@ -142,8 +143,11 @@ func (m *microphone) listen(ctx context.Context, waitForVoice time.Duration) ([]
 	}
 }
 
-func (m *microphone) nextUtterance(ctx context.Context, say func(string) error) ([]byte, error) {
-	wav, err := m.listen(ctx, time.Minute)
+func (m *microphone) nextUtterance(ctx context.Context, hold bool, say func(string) error) ([]byte, error) {
+	if !hold {
+		return m.listen(ctx, 30*time.Second)
+	}
+	wav, err := m.listen(ctx, 5*time.Minute)
 	if err != nil || wav != nil {
 		return wav, err
 	}
@@ -224,7 +228,7 @@ func speak(ctx context.Context, text string, synthesize func(context.Context, st
 	return ctx.Err()
 }
 
-func conversation(ctx context.Context, call *calls.Call, b *bridge) error {
+func conversation(ctx context.Context, call *calls.Call, b *bridge, greeting string) error {
 	input := &microphone{input: make(chan []byte, 16)}
 	call.Receive(calls.SinkFunc(input.put))
 	player := calls.NewPlayer()
@@ -251,7 +255,7 @@ func conversation(ctx context.Context, call *calls.Call, b *bridge) error {
 	}
 	streaming := true
 	say := func(text string) error {
-		cached := text == presencePrompt || text == "Hallo, du kannst jetzt sprechen."
+		cached := text == presencePrompt || text == incomingGreeting
 		if streaming && !cached {
 			err := b.streamReply(ctx, id, text, player)
 			if errors.Is(err, errStreamUnsupported) {
@@ -273,24 +277,25 @@ func conversation(ctx context.Context, call *calls.Call, b *bridge) error {
 			return ctx.Err()
 		}
 	}
-	return runTurns(ctx, input, say, func(ctx context.Context, wav []byte) (string, bool, error) {
+	return runTurns(ctx, input, greeting, say, func(ctx context.Context, wav []byte) (string, callAction, error) {
 		return b.turn(ctx, id, wav)
 	})
 }
 
-func runTurns(ctx context.Context, input *microphone, say func(string) error, submit func(context.Context, []byte) (string, bool, error)) error {
-	if err := say("Hallo, du kannst jetzt sprechen."); err != nil {
+func runTurns(ctx context.Context, input *microphone, greeting string, say func(string) error, submit func(context.Context, []byte) (string, callAction, error)) error {
+	if err := say(greeting); err != nil {
 		return err
 	}
+	hold := false
 	for {
-		wav, err := input.nextUtterance(ctx, say)
+		wav, err := input.nextUtterance(ctx, hold, say)
 		if err != nil || wav == nil {
 			return err
 		}
 		turn, cancel := context.WithTimeout(ctx, 6*time.Minute)
-		text, approval, err := submit(turn, wav)
+		text, action, err := submit(turn, wav)
 		cancel()
-		if err != nil || approval {
+		if err != nil || action == needsApproval {
 			if ctx.Err() == nil {
 				_ = say("Bitte öffne den Chat deines Assistenten, um den nächsten Schritt zu prüfen.")
 			}
@@ -299,5 +304,9 @@ func runTurns(ctx context.Context, input *microphone, say func(string) error, su
 		if err := say(text); err != nil {
 			return err
 		}
+		if action == endCall {
+			return nil
+		}
+		hold = action == holdCall
 	}
 }

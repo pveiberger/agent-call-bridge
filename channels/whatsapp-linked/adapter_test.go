@@ -93,9 +93,9 @@ func TestLocalBridgeTurnAndAudio(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	text, approval, err := b.turn(ctx, callID, input)
-	if err != nil || approval || text != reply {
-		t.Fatalf("Normal turn: %q, approval=%v, err=%v", text, approval, err)
+	text, action, err := b.turn(ctx, callID, input)
+	if err != nil || action != "" || text != reply {
+		t.Fatalf("Normal turn: %q, approval=%v, err=%v", text, action, err)
 	}
 	pcm, err := b.speech(ctx, callID, text)
 	if err != nil || len(pcm) < 1596 || len(pcm) > 1604 || bytes.Equal(pcm, make([]byte, len(pcm))) || bytes.HasPrefix(pcm, []byte("RIFF")) {
@@ -104,10 +104,10 @@ func TestLocalBridgeTurnAndAudio(t *testing.T) {
 	mu.Lock()
 	state = "approval"
 	mu.Unlock()
-	_, approval, err = b.turn(ctx, callID, input)
+	_, action, err = b.turn(ctx, callID, input)
 	mu.Lock()
 	defer mu.Unlock()
-	if err != nil || !approval || uploadCount != 2 || pollCount != 3 || speechCount != 1 {
-		t.Fatalf("Approval state: approval=%v, err=%v, request counts %d/%d/%d", approval, err, uploadCount, pollCount, speechCount)
+	if err != nil || action != needsApproval || uploadCount != 2 || pollCount != 3 || speechCount != 1 {
+		t.Fatalf("Approval state: approval=%v, err=%v, request counts %d/%d/%d", action, err, uploadCount, pollCount, speechCount)
 	}
 }

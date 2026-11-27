@@ -8,6 +8,7 @@ import { nodAdapter } from './nod.mjs';
 import { compatibleAdapter } from './compatible.mjs';
 import { speechOutput, streamPocketAudio, transcriber } from './speech.mjs';
 import { spokenText } from './spoken-text.mjs';
+import { createCallbacks } from './callbacks.mjs';
 
 const e = process.env,
   kind = e.AGENT_BACKEND || 'nod',
@@ -112,6 +113,9 @@ function isWav(bytes) {
 const busy = new Set();
 const waiting = new Set();
 const realtime = kind === 'nod' && authMode === 'nod' && e.CALL_REALTIME === 'true';
+const callbacks = kind === 'nod' && e.CALLBACK_CHANNELS
+  ? createCallbacks(e.CALLBACK_CHANNELS, e.CALLBACK_DB || '/var/lib/callbacks/attempts.sqlite')
+  : null;
 const prepareShortSpeech = kind === 'nod' && !!e.STT_BASE_URL && !!e.STT_FAST_BASE_URL && e.CALL_PREPARE_SHORT_SPEECH === 'true';
 async function route(req, res, signal) {
   const path = new URL(req.url, 'http://localhost').pathname;
@@ -172,12 +176,18 @@ async function route(req, res, signal) {
   if (!channel && req.method === 'POST') checkOrigin(req);
   const auth = authentication(req, channel),
     action = path.slice(channel ? 9 : 11);
+  if (req.method === 'POST' && (channel ? ['callback/whatsapp-linked', 'callback/telegram'].includes(action) : realtime && action === 'callback/browser')) {
+    if (!callbacks) return send(res, 200, {});
+    await adapter.check(auth, signal, web && authMode === 'nod');
+    return send(res, 200, await callbacks.next(action.slice(9), () => adapter.callbackState(auth, signal)));
+  }
   if (kind === 'nod')
     await adapter.check(auth, signal, web && authMode === 'nod');
   if (action === 'session' && req.method === 'GET' && !channel) {
     return send(res, 200, {
       ok: true,
       agent: names[kind],
+      greeting: 'Hi, hier ist ' + names[kind] + '. Wie kann ich dir helfen?',
       ...(realtime ? { realtime: true, taskProject: (e.CALL_TASK_PROJECT || '').slice(0, 150) } : {}),
       ...(prepareShortSpeech ? { prepareShortSpeech: true } : {}),
       ...(e.TTS_ENGINE === 'pocket' ? { speechStream: true } : {}),
@@ -214,7 +224,7 @@ async function route(req, res, signal) {
       const bytes = await read(req, 10 * 1024 * 1024);
       if (!isWav(bytes)) throw new Failure(400, 'Ungültige WAV-Aufnahme.');
       return send(res, 200, {
-        id: await adapter.submit(bytes, id, call, auth, signal),
+        id: await adapter.submit(bytes, id, call, auth, signal, channel),
       });
     } finally {
       busy.delete(call);
@@ -222,7 +232,7 @@ async function route(req, res, signal) {
   }
   if (action.startsWith('turn/') && req.method === 'GET') {
     const id = action.slice(5);
-    let turn = await adapter.poll(id, auth, signal, call);
+    let turn = await adapter.poll(id, auth, signal, call, channel);
     if (
       turn.state === 'working' &&
       req.headers.prefer === 'wait=6' &&
@@ -231,7 +241,7 @@ async function route(req, res, signal) {
     ) {
       waiting.add(call);
       try {
-        turn = await adapter.waitForTurn(id, auth, signal, call, turn);
+        turn = await adapter.waitForTurn(id, auth, signal, call, turn, channel);
       } finally {
         waiting.delete(call);
       }

@@ -33,11 +33,15 @@ Dieser experimentelle Zugang verwendet die unabhängigen Implementierungen Hyper
 
    Rufe die zweite Nummer mit der WhatsApp-Sprachanruffunktion an. Nach der Begrüßung kannst du Deutsch sprechen. Bei einer Pause schickt der Adapter den Beitrag an den konfigurierten Assistenten und spielt anschließend dessen Antwort ab. Während der Wiedergabe pausiert die Spracheingabe. Freigaben bearbeitest du im regulären Chat.
 
-Ein aktives Gespräch hat im Adapter keine feste Höchstdauer. Wenn beim Zuhören eine Minute lang keine Sprache zu erkennen ist, fragt die Sprachausgabe „Sind Sie noch da? Wenn ja, sprechen Sie jetzt.“ Sobald die Ansage zu Ende ist, bleiben 30 Sekunden für eine Antwort. Erkennt der Adapter Sprache, läuft das Gespräch weiter. Bei weiterer Stille legt er auf. Während der Verarbeitung und Wiedergabe pausiert die Frist. Die Nachfrage verwendet einen festen Text und löst keinen Auftrag an den Assistenten aus.
+Ein aktives Gespräch hat im Adapter keine feste Höchstdauer. Nach 30 Sekunden ohne erkannte Sprache beim Zuhören legt der Adapter auf. Mit „Bleib bitte dran“ wartet er fünf Minuten und fragt dann „Bist du noch da?“. Nach der Frage bleiben 30 Sekunden zum Antworten. Eine erneute Bitte verlängert die Wartezeit wieder auf fünf Minuten. Bei einem klaren Abschied wie „Alles klar, danke dir, dann bis später“ legt der Adapter nach der gesprochenen Verabschiedung auf. Verarbeitung und Wiedergabe zählen nicht als Stille.
 
 Mit der Pocket-Stimme beginnt die Wiedergabe, sobald der erste 60-ms-Audioabschnitt vorliegt. Die Bridge liefert 24-kHz-Audio, das der Adapter fortlaufend auf die 16 kHz des WhatsApp-Codecs umrechnet. Bei Piper und älteren Bridge-Versionen lädt der Adapter die Antwort satzweise als WAV. Auflegen beendet die laufende Audioübertragung.
 
 Die Erkennung vergleicht das Mikrofonsignal mit dem laufenden Hintergrundgeräusch. So kann die Stillefrist auch bei einem hörbaren Lüfter ablaufen. Bei leisen Antworten puffert der Adapter den Wortanfang und gibt das ursprüngliche Audiosignal an die Transkription weiter.
+
+## Rückrufe von Nod
+
+Setze `NOD_CALLBACKS=true` in der Adapter-Konfiguration und nimm `whatsapp-linked` in `CALLBACK_CHANNELS` der Bridge auf. Bei mehreren erlaubten Nummern bestimmt `LINKED_CALLBACK_OWNER` genau eine davon als Ziel. Nach dem Abheben nennt Nod die offene Frage. Ein verpasster Anruf löst keinen zweiten Versuch für dieselbe Frage aus.
 
 ## Betrieb und Daten
 

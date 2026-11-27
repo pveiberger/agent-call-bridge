@@ -53,9 +53,11 @@ async def refuse_outbound(*_args, **_kwargs):
 
 
 class Call:
-    def __init__(self, adapter, user):
+    def __init__(self, adapter, user, question=None):
         self.adapter = adapter
         self.user = user
+        self.callback_question = question
+        self.dial_permit = bool(question)
         self.id = str(uuid.uuid4())
         self.remote_ended = False
         self.job = None
@@ -120,7 +122,8 @@ class Call:
                 return False
             if result["state"] == "reply" and result.get("text"):
                 await self.speak(result.get("speechText") or result["text"])
-                return True
+                self.input.hold = result.get("callAction") == "hold_call"
+                return result.get("callAction") != "end_call"
             raise RuntimeError("The assistant could not return a reply.")
 
     async def run(self):
@@ -129,10 +132,12 @@ class Call:
             async with asyncio.timeout(55):
                 await self.adapter.calls.play(self.user, MediaStream(ExternalMedia.AUDIO, CALL_AUDIO),
                                               CallConfig(timeout=30))
+                self.dial_permit = False
                 await self.adapter.calls.record(self.user, RecordStream(True, CALL_AUDIO))
             connected = True
             async with asyncio.timeout(35):
-                await self.speak("Hallo, du kannst jetzt sprechen.")
+                await self.speak("Hi, hier ist Nod. " + self.callback_question
+                                 if self.callback_question else "Hi, hier ist Nod. Wie kann ich dir helfen?")
             while (audio := await self.input.listen(self.speak)) is not None:
                 async with asyncio.timeout(360):
                     if not await self.reply(audio):
@@ -161,10 +166,36 @@ class Adapter:
         self.secret = secret
         self.active = None
 
+    def guard_dial(self, original, owner):
+        async def request(user_id, *args, **kwargs):
+            call = self.active
+            if not call or user_id != owner or user_id != call.user or not call.dial_permit:
+                return await refuse_outbound()
+            call.dial_permit = False
+            return await original(user_id, *args, **kwargs)
+        return request
+
+    async def callbacks(self, owner):
+        while True:
+            if self.active is None:
+                try:
+                    async with self.http.post(self.bridge_url + "/channel/callback/telegram",
+                                              headers={"Authorization": "Bearer " + self.secret},
+                                              allow_redirects=False, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            question = (await response.json()).get("question")
+                            if self.active is None and isinstance(question, str) and question.strip():
+                                self.start(Call(self, owner, question[:600]))
+                except (aiohttp.ClientError, TimeoutError, ValueError):
+                    pass
+            await asyncio.sleep(15)
+
     async def incoming_call(self, _calls, update):
         if update.chat_id not in self.users or self.active is not None:
             return
-        session = Call(self, update.chat_id)
+        self.start(Call(self, update.chat_id))
+
+    def start(self, session):
         self.active = session
         session.job = asyncio.create_task(session.run())
 
@@ -220,14 +251,22 @@ async def main(command):
         if identity.bot or identity.id in users:
             raise ValueError("Use a dedicated receiver user distinct from the allowed caller.")
         calls = PyTgCalls(user_client, workers=2)
-        calls._app.request_call = refuse_outbound
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=100)) as http:
             adapter = Adapter(calls, http, users, os.getenv("BRIDGE_BASE_URL", "http://bridge:8091"), secret)
+            enabled = os.getenv("NOD_CALLBACKS") == "true"
+            owner = int(os.environ["TELEGRAM_CALLBACK_OWNER"]) if os.getenv("TELEGRAM_CALLBACK_OWNER") else next(iter(users)) if len(users) == 1 else None
+            if enabled and owner not in users:
+                raise ValueError("Choose one allowlisted TELEGRAM_CALLBACK_OWNER.")
+            calls._app.request_call = adapter.guard_dial(calls._app.request_call, owner) if enabled else refuse_outbound
             adapter.register()
             await calls.start()
+            monitor = asyncio.create_task(adapter.callbacks(owner)) if enabled else None
             try:
                 await user_client.run_until_disconnected()
             finally:
+                if monitor:
+                    monitor.cancel()
+                    await asyncio.gather(monitor, return_exceptions=True)
                 if adapter.active and adapter.active.job:
                     adapter.active.job.cancel()
                     with contextlib.suppress(asyncio.CancelledError):

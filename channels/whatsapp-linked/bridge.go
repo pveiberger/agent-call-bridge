@@ -70,25 +70,36 @@ func (b *bridge) request(ctx context.Context, method, path, callID, requestID, c
 	return data, nil
 }
 
-func (b *bridge) turn(ctx context.Context, callID string, wav []byte) (string, bool, error) {
+type callAction string
+
+const (
+	holdCall      callAction = "hold_call"
+	endCall       callAction = "end_call"
+	needsApproval callAction = "approval"
+)
+
+func (b *bridge) turn(ctx context.Context, callID string, wav []byte) (string, callAction, error) {
 	sent, err := b.request(ctx, "POST", "/channel/utterance", callID, uuid.NewString(), "audio/wav", wav, 64<<10)
 	if err != nil {
-		return "", false, err
+		return "", "", err
 	}
 	var receipt struct{ ID string }
 	if json.Unmarshal(sent, &receipt) != nil || receipt.ID == "" || len(receipt.ID) > 1024 || receipt.ID == "." || receipt.ID == ".." {
-		return "", false, errors.New("Invalid turn ID")
+		return "", "", errors.New("Invalid turn ID")
 	}
 	path := "/channel/turn/" + url.PathEscape(receipt.ID)
 	delay := 250 * time.Millisecond
 	for {
 		data, err := b.request(ctx, "GET", path, callID, "", "", nil, 1<<20)
 		if err != nil {
-			return "", false, err
+			return "", "", err
 		}
-		var answer struct{ State, Text, SpeechText string }
+		var answer struct {
+			State, Text, SpeechText string
+			CallAction              callAction
+		}
 		if json.Unmarshal(data, &answer) != nil {
-			return "", false, errors.New("Invalid turn state")
+			return "", "", errors.New("Invalid turn state")
 		}
 		switch answer.State {
 		case "working":
@@ -96,20 +107,20 @@ func (b *bridge) turn(ctx context.Context, callID string, wav []byte) (string, b
 			case <-time.After(delay):
 				delay = min(delay*2, time.Second)
 			case <-ctx.Done():
-				return "", false, ctx.Err()
+				return "", "", ctx.Err()
 			}
 		case "approval":
-			return "", true, nil
+			return "", needsApproval, nil
 		case "reply":
 			if strings.TrimSpace(answer.SpeechText) != "" {
-				return answer.SpeechText, false, nil
+				return answer.SpeechText, answer.CallAction, nil
 			}
 			if strings.TrimSpace(answer.Text) != "" {
-				return answer.Text, false, nil
+				return answer.Text, answer.CallAction, nil
 			}
 			fallthrough
 		default:
-			return "", false, errors.New("Assistant returned no reply")
+			return "", "", errors.New("Assistant returned no reply")
 		}
 	}
 }

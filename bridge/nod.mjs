@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { Failure, json, jsonPost, multipart, request, uuid } from './http.mjs';
 import { clarification, UnclearTranscription } from './speech.mjs';
 import { waitForNod } from './turn-wait.mjs';
+import { nativeCallReply } from '../web/call-intent.js';
 
 export function nodAdapter({ base, authority, transcribe }) {
   const upstream = new URL(base);
@@ -9,23 +10,23 @@ export function nodAdapter({ base, authority, transcribe }) {
     throw Error('NOD_BASE_URL must not include credentials');
   // Keep only the binding for a rejected recording. Its spoken reply does
   // not enter Nod's chat or cause any tool use. A retried upload is idempotent.
-  const clarifications = new Map();
+  const localReplies = new Map();
   const preparations = new Map();
   const privateInputPending = (state) => state.verificationRequests?.length ||
     state.messages?.some((m) => m.approval?.state === 'pending');
   function audioBinding(audio, auth) {
     return createHash('sha256').update(auth.Cookie || auth.Authorization || '').update('\0').update(audio).digest('hex');
   }
-  function clarificationReceipt(messageId, callId, audio, remember = false) {
-    const prior = clarifications.get(messageId);
-    if (!prior && !remember) return;
+  function localReceipt(messageId, callId, audio, reply) {
+    const prior = localReplies.get(messageId);
+    if (!prior && !reply) return;
     const hash = createHash('sha256').update(audio).digest('hex');
     if (prior) {
       if (prior.callId !== callId || prior.hash !== hash)
         throw new Failure(409, 'Beitrags-ID bereits belegt.');
     } else {
-      clarifications.set(messageId, { callId, hash });
-      setTimeout(() => clarifications.delete(messageId), 60 * 60_000).unref();
+      localReplies.set(messageId, { callId, hash, reply });
+      setTimeout(() => localReplies.delete(messageId), 60 * 60_000).unref();
     }
     return 'clarify.' + messageId;
   }
@@ -61,6 +62,9 @@ export function nodAdapter({ base, authority, transcribe }) {
     );
   }
   return {
+    callbackState(auth, signal) {
+      return api('/api/state', auth, { signal });
+    },
     async submitTranscript(text, messageId, auth, signal) {
       if (typeof text !== 'string' || !text.trim() || text.length > 12000 || text.trimStart().startsWith('/'))
         throw new Failure(400, 'Ungültiger gesprochener Beitrag.');
@@ -98,8 +102,8 @@ export function nodAdapter({ base, authority, transcribe }) {
         forget();
       }
     },
-    async submit(audio, messageId, callId, auth, signal) {
-      const localId = clarificationReceipt(messageId, callId, audio);
+    async submit(audio, messageId, callId, auth, signal, native = false) {
+      const localId = localReceipt(messageId, callId, audio);
       if (localId) return localId;
       const state = await api('/api/state', auth, { signal });
       if (privateInputPending(state)) {
@@ -129,11 +133,13 @@ export function nodAdapter({ base, authority, transcribe }) {
           transcript = result?.text ?? await transcribe(audio, signal);
         } catch (error) {
           if (!(error instanceof UnclearTranscription)) throw error;
-          return clarificationReceipt(messageId, callId, audio, true);
+          return localReceipt(messageId, callId, audio, { state: 'reply', text: clarification });
         }
         // Text-only chat commands have different semantics than a voice note.
         if (transcript.startsWith('/'))
           throw new Failure(409, 'Bitte gib Chatbefehle direkt im Chat ein.');
+        const control = native && nativeCallReply(transcript);
+        if (control) return localReceipt(messageId, callId, audio, control);
         const current = await api('/api/state', auth, { signal });
         if (
           current.threadId !== state.threadId ||
@@ -151,22 +157,22 @@ export function nodAdapter({ base, authority, transcribe }) {
       }
       return submitMessage(route, payload, messageId, state.threadId, auth, signal);
     },
-    waitForTurn(id, auth, signal, callId, initial) {
+    waitForTurn(id, auth, signal, callId, initial, native = false) {
       return waitForNod(
         base,
         { Host: authority, ...auth, Accept: 'text/event-stream' },
         signal,
-        () => this.poll(id, auth, signal, callId),
+        () => this.poll(id, auth, signal, callId, native),
         initial,
       );
     },
-    async poll(id, auth, signal, callId) {
+    async poll(id, auth, signal, callId, native = false) {
       const parts = id.split('.');
       if (parts.length === 2 && parts[0] === 'clarify') {
-        const local = clarifications.get(parts[1]);
+        const local = localReplies.get(parts[1]);
         if (!local || local.callId !== callId)
           throw new Failure(404, 'Gespräch nicht gefunden.');
-        return { state: 'reply', text: clarification };
+        return local.reply;
       }
       if (parts.length !== 3 || !parts.every((x) => uuid.test(x)))
         throw new Failure(404, 'Gespräch nicht gefunden.');
@@ -231,6 +237,10 @@ export function nodAdapter({ base, authority, transcribe }) {
           state: 'error',
           text: 'Nod hat den Beitrag nicht abgeschlossen. Details stehen im Chat.',
         };
+      if (native && !transcribe && turn.status === 'succeeded') {
+        const control = nativeCallReply(state.messages[index].text || '');
+        if (control) return control;
+      }
       const text = messages
         .map((m) => m.text?.trim())
         .filter(Boolean)

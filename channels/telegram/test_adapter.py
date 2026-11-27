@@ -150,16 +150,49 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(len(frame) == FRAME_BYTES for frame in frames))
         self.assertEqual(b"".join(frames)[:-2], (struct.pack("<h", 500) * (19200 - 1)))
 
-    async def test_idle_call_warns_and_leaves_without_submitting_silence(self):
+    async def test_callback_permit_binds_one_attempt_to_the_allowlisted_owner(self):
+        adapter = Adapter(SimpleNamespace(), None, {42}, "", "")
+        dial = AsyncMock()
+        request = adapter.guard_dial(dial, 42)
+        adapter.active = Call(adapter, 42)
+        with self.assertRaises(RuntimeError):
+            await request(42, b"incoming")
+        adapter.active = Call(adapter, 42, "Soll ich den Termin verschieben?")
+        with self.assertRaises(RuntimeError):
+            await request(13, b"other")
+        await request(42, b"owner")
+        with self.assertRaises(RuntimeError):
+            await request(42, b"retry")
+        dial.assert_awaited_once_with(42, b"owner")
+
+    async def test_idle_call_leaves_without_submitting_silence(self):
         calls = SimpleNamespace(play=AsyncMock(), record=AsyncMock(), leave_call=AsyncMock())
         session = Call(Adapter(calls, None, {99}, "", ""), 99)
         session.speak = AsyncMock()
         session.reply = AsyncMock()
-        with patch("media.IDLE_SECONDS", 0.025), patch("media.REPLY_SECONDS", 0.015):
+        with patch("media.IDLE_SECONDS", 0.025):
             await asyncio.wait_for(session.run(), 1)
         self.assertEqual([c.args[0] for c in session.speak.await_args_list],
-                         ["Hallo, du kannst jetzt sprechen.", IDLE_PROMPT])
+                         ["Hi, hier ist Nod. Wie kann ich dir helfen?"])
         session.reply.assert_not_awaited()
+        calls.leave_call.assert_awaited_once_with(99)
+
+    async def test_hold_check_in_and_goodbye_leave_after_playback(self):
+        calls = SimpleNamespace(play=AsyncMock(), record=AsyncMock(), leave_call=AsyncMock())
+        session = Call(Adapter(calls, None, {99}, "", ""), 99)
+        session.input.capture = AsyncMock(side_effect=[b"wait", None, b"again", b"bye"])
+        session.bridge = AsyncMock(side_effect=[
+            {"id": "one"}, {"state": "reply", "callAction": "hold_call", "text": "Ich warte."},
+            {"id": "two"}, {"state": "reply", "callAction": "hold_call", "text": "Noch einmal."},
+            {"id": "three"}, {"state": "reply", "callAction": "end_call", "text": "Bis dann!"},
+        ])
+        async def say(_text):
+            calls.leave_call.assert_not_awaited()
+        session.speak = AsyncMock(side_effect=say)
+        await session.run()
+        self.assertEqual([c.args[0] for c in session.input.capture.await_args_list], [30, 300, 30, 300])
+        self.assertEqual([c.args[0] for c in session.speak.await_args_list],
+                         ["Hi, hier ist Nod. Wie kann ich dir helfen?", "Ich warte.", IDLE_PROMPT, "Noch einmal.", "Bis dann!"])
         calls.leave_call.assert_awaited_once_with(99)
 
     def test_stationary_noise_cannot_confirm_a_turn_or_refresh_the_deadline(self):
@@ -185,10 +218,11 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
 
         with patch("media.monotonic", new=lambda: clock):
+            call.input.hold = True
             listening = asyncio.create_task(call.input.listen(say))
             await asyncio.sleep(0)
             for frame in noise_frames("fan", 48000, 122):
-                clock += 0.5
+                clock += 2.5
                 await feed(frame)
                 if warned.is_set():
                     break
@@ -218,12 +252,15 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
             spoken.put_nowait(text)
             clock += 5  # The grace period starts after the announcement.
 
+        next_hold = False
+
         async def reply(audio):
-            nonlocal clock
+            nonlocal clock, next_hold
+            session.input.hold, next_hold = next_hold, False
             self.assertTrue(audio.startswith(b"RIFF"))
             self.assertFalse(session.input.listening)
             turns.put_nowait(True)
-            clock += 65  # Long-running agent work takes no caller time.
+            clock += 85  # Long-running agent work takes no caller time.
             return True
 
         session.speak, session.reply = speak, reply
@@ -234,13 +271,15 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
             async with asyncio.timeout(8):
                 job = asyncio.create_task(session.run())
                 await spoken.get()  # Greeting.
-                for _ in range(70):
-                    clock += 55
+                for turn in range(70):
+                    clock += 25
+                    if turn == 69:
+                        next_hold = True
                     session.input.feed(voice)
                     await turns.get()
                 self.assertGreater(clock, 2 * 3600)
                 self.assertTrue(spoken.empty())
-                clock += 59
+                clock += 299
                 session.input.feed(quiet)
                 await asyncio.sleep(0)
                 self.assertTrue(spoken.empty())
@@ -250,9 +289,6 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
                 clock += 29
                 session.input.feed(voice)
                 await turns.get()
-                clock += 60
-                session.input.feed(quiet)
-                self.assertEqual(await spoken.get(), IDLE_PROMPT)
                 clock += 29
                 session.input.feed(quiet)
                 await asyncio.sleep(0)

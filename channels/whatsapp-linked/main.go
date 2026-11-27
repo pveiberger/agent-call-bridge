@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -137,6 +139,16 @@ func run(ctx context.Context, client *wa.Client, expected string) error {
 		}
 		owners = append(owners, p)
 	}
+	callbackOwner := ""
+	if os.Getenv("NOD_CALLBACKS") == "true" {
+		callbackOwner = phone(os.Getenv("LINKED_CALLBACK_OWNER"))
+		if callbackOwner == "" && len(owners) == 1 {
+			callbackOwner = owners[0]
+		}
+		if !slices.Contains(owners, callbackOwner) {
+			return errors.New("Choose one allowlisted LINKED_CALLBACK_OWNER")
+		}
+	}
 	ids := &identities{byJID: make(map[types.JID]string)}
 	var active sync.Mutex
 	var workers sync.WaitGroup
@@ -204,7 +216,7 @@ func run(ctx context.Context, client *wa.Client, expected string) error {
 			}
 			// Attach sink and player immediately. The upstream OnReady event
 			// itself needs a sink and incoming audio to start playout.
-			if err := conversation(cctx, call, bridge); err != nil && cctx.Err() == nil {
+			if err := conversation(cctx, call, bridge, incomingGreeting); err != nil && cctx.Err() == nil {
 				fmt.Fprintln(os.Stderr, "Sprachverbindung beendet. Bitte den Assistenten-Chat prüfen.")
 			}
 		}()
@@ -212,6 +224,40 @@ func run(ctx context.Context, client *wa.Client, expected string) error {
 	if err := client.ConnectContext(ctx); err != nil {
 		stop()
 		return errors.New("WhatsApp connection failed")
+	}
+	if callbackOwner != "" {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			ticks := time.NewTicker(15 * time.Second)
+			defer ticks.Stop()
+			for {
+				select {
+				case <-lifetime.Done():
+					return
+				case <-ticks.C:
+					if !client.IsConnected() || !active.TryLock() {
+						continue
+					}
+					func() {
+						defer active.Unlock()
+						cctx, cancel := context.WithCancel(lifetime)
+						activeMu.Lock()
+						stopActive = cancel
+						activeMu.Unlock()
+						defer func() { activeMu.Lock(); stopActive = nil; activeMu.Unlock(); cancel() }()
+						lookup, finish := context.WithTimeout(cctx, 10*time.Second)
+						data, err := bridge.request(lookup, "POST", "/channel/callback/whatsapp-linked", "", "", "", nil, 8192)
+						finish()
+						var job struct{ Question string }
+						if err != nil || json.Unmarshal(data, &job) != nil || strings.TrimSpace(job.Question) == "" {
+							return
+						}
+						_ = callback(cctx, media, callbackOwner, job.Question, bridge)
+					}()
+				}
+			}
+		}()
 	}
 	defer func() { stop(); client.Disconnect(); workers.Wait() }()
 	for {
@@ -226,6 +272,37 @@ func run(ctx context.Context, client *wa.Client, expected string) error {
 			return nil
 		}
 	}
+}
+
+func callback(ctx context.Context, media *calls.Client, owner, question string, b *bridge) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	timeout := time.AfterFunc(45*time.Second, cancel)
+	defer timeout.Stop()
+	call, err := media.Call(ctx, owner)
+	if err != nil {
+		return err
+	}
+	defer call.Hangup()
+	accepted := make(chan struct{}, 1)
+	call.OnEnd(func(string) { cancel() })
+	call.OnGroupState(func(calls.GroupCallState) { cancel() })
+	call.OnPeerAccept(func() {
+		select {
+		case accepted <- struct{}{}:
+		default:
+		}
+	})
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-accepted:
+		timeout.Stop()
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return conversation(ctx, call, b, "Hi, hier ist Nod. "+question)
 }
 
 func main() {

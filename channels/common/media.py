@@ -13,9 +13,9 @@ import webrtcvad
 
 RATE = 16000
 FRAME = RATE // 50
-IDLE_SECONDS = 60
-REPLY_SECONDS = 30
-IDLE_PROMPT = "Sind Sie noch da? Wenn ja, sprechen Sie jetzt."
+IDLE_SECONDS = 30
+HOLD_SECONDS = 300
+IDLE_PROMPT = "Bist du noch da?"
 
 
 def encode_wave(pcm):
@@ -136,6 +136,7 @@ class CallInput:
 
     def __init__(self):
         self.queue = None
+        self.hold = False
 
     @property
     def listening(self):
@@ -177,14 +178,15 @@ class CallInput:
             self.queue = None
 
     async def listen(self, say):
-        clip = await self.capture(IDLE_SECONDS)
-        if clip is not None:
+        hold, self.hold = self.hold, False
+        clip = await self.capture(HOLD_SECONDS if hold else IDLE_SECONDS)
+        if clip is not None or not hold:
             return clip
         # Microphone input remains gated during the prompt. Start the grace
         # period after playback has finished, even if synthesis took a while.
         async with asyncio.timeout(35):
             await say(IDLE_PROMPT)
-        return await self.capture(REPLY_SECONDS)
+        return await self.capture(IDLE_SECONDS)
 
 
 def spoken_parts(text, first_limit=150, next_limit=420):
@@ -228,7 +230,7 @@ class SpeechPlayback:
         self.supported = None
 
     async def speak(self, text, open_stream, rate, play_pcm, synthesize, play_wav):
-        announcements = (IDLE_PROMPT, "Hallo, du kannst jetzt sprechen.")
+        announcements = (IDLE_PROMPT, "Hi, hier ist Nod. Wie kann ich dir helfen?")
         if self.supported is not False and text not in announcements:
             for part in spoken_parts(text, 1200, 1200):
                 async with open_stream(part) as response:

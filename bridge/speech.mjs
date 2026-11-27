@@ -234,7 +234,8 @@ export function streamPocketAudio(base, text, signal) {
 const announcements = new Set([
   clarification,
   'Sind Sie noch da? Wenn ja, sprechen Sie jetzt.',
-  'Hallo, du kannst jetzt sprechen.',
+  'Bist du noch da?',
+  'Hi, hier ist Nod. Wie kann ich dir helfen?',
 ]);
 
 export function speechOutput(env) {

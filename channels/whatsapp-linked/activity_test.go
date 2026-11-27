@@ -35,10 +35,10 @@ func TestFanCannotExtendThePresenceDeadline(t *testing.T) {
 		prompts := 0
 		done := make(chan []byte, 1)
 		go func() {
-			wav, err := mic.nextUtterance(t.Context(), func(text string) error {
+			wav, err := mic.nextUtterance(t.Context(), true, func(text string) error {
 				prompts++
-				if text != presencePrompt || time.Since(start) != time.Minute {
-					t.Error("Fan disturbed the one-minute listening window")
+				if text != presencePrompt || time.Since(start) != 5*time.Minute {
+					t.Error("Fan disturbed the five-minute hold window")
 				}
 				time.Sleep(2 * time.Second)
 				return nil
@@ -50,7 +50,7 @@ func TestFanCannotExtendThePresenceDeadline(t *testing.T) {
 		}()
 		fan := testFan{seed: 55}
 		synctest.Wait()
-		for range 92 * 50 {
+		for range 333 * 50 {
 			mic.put(fan.frame())
 			synctest.Wait()
 			time.Sleep(20 * time.Millisecond)

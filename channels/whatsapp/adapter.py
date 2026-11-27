@@ -166,8 +166,10 @@ class Call:
 
     async def listen(self):
         try:
+            await self.say("Hi, hier ist Nod. Wie kann ich dir helfen?")
             while (clip := await self.input.listen(self.say)) is not None:
-                await self.converse(clip)
+                if await self.converse(clip) == "end_call":
+                    break
         finally:
             self.ended.set()
 
@@ -218,6 +220,8 @@ class Call:
                     await self.say("Dein Assistent braucht deine Bestätigung. Bitte öffne seinen Chat.")
                 elif item["state"] == "reply" and item.get("text"):
                     await self.say(item.get("speechText") or item["text"])
+                    self.input.hold = item.get("callAction") == "hold_call"
+                    return item.get("callAction")
                 else:
                     raise RuntimeError("No reply")
         except asyncio.CancelledError:

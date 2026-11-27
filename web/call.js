@@ -341,6 +341,26 @@ function keepScreenAwake(call) {
     });
 }
 
+async function waitForAudioOutput(call, resume) {
+  const signal = call.controller.signal;
+  let timer, onAbort;
+  const interrupted = new Promise((_, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => {
+      reject(new CallError(
+        "Die Audioausgabe konnte nicht starten. Wähle in den Systemeinstellungen einen Lautsprecher oder Kopfhörer aus und starte den Anruf erneut.",
+      ));
+    }, 10_000);
+  });
+  try {
+    await Promise.race([resume, interrupted]);
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 async function begin() {
   const Audio = window.AudioContext || window.webkitAudioContext;
   if (
@@ -377,7 +397,7 @@ async function begin() {
     unlock.connect(ctx.destination);
     unlock.onended = () => unlock.disconnect();
     unlock.start();
-    await resume;
+    await waitForAudioOutput(call, resume);
     const auth = await readStatus(call, "session");
     check(call);
     if (!auth.ok) throw new CallError("Melde dich zuerst an.", "login");

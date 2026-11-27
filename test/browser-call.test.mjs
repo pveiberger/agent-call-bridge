@@ -7,7 +7,7 @@ const prompt = 'Sind Sie noch da? Wenn ja, sprechen Sie jetzt.';
 
 // Exercise the page's actual start button, worklet messages, HTTP requests and
 // playback completion. The clock advances independently of microphone callbacks.
-async function browser(t, getTurn, streamSpeech, intercept) {
+async function browser(t, getTurn, streamSpeech, intercept, devices = {}) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const document = new EventTarget();
   document.body = { dataset: {} };
@@ -37,7 +37,7 @@ async function browser(t, getTurn, streamSpeech, intercept) {
     }
     state = 'running';
     audioWorklet = { addModule: async () => {} };
-    async resume() {}
+    async resume() { await devices.resume?.(this); }
     async close() {
       this.state = 'closed';
     }
@@ -118,7 +118,14 @@ async function browser(t, getTurn, streamSpeech, intercept) {
     fetch,
     AudioWorkletNode: Worklet,
     performance: { now: () => elapsed },
-    navigator: { mediaDevices: { getUserMedia: async () => stream } },
+    navigator: {
+      mediaDevices: {
+        async getUserMedia() {
+          await devices.microphone?.();
+          return stream;
+        },
+      },
+    },
   })) {
     const saved = Object.getOwnPropertyDescriptor(globalThis, key);
     Object.defineProperty(globalThis, key, { configurable: true, value });
@@ -166,6 +173,42 @@ async function browser(t, getTurn, streamSpeech, intercept) {
       document.getElementById('toggle').dispatchEvent(new Event('click')),
   };
 }
+
+test('a stalled audio output releases its context and gives a speaker hint before requesting the microphone', async (t) => {
+  let context, resolveOutput;
+  let micRequests = 0;
+  const call = await browser(t, null, null, null, {
+    resume(ctx) {
+      context = ctx;
+      ctx.state = 'suspended';
+      return new Promise((resolve) => { resolveOutput = resolve; });
+    },
+    microphone() { micRequests++; },
+  });
+  await call.advance(9_999);
+  assert.equal(call.phase(), 'starting');
+  await call.advance(1);
+  assert.equal(call.phase(), 'error');
+  assert.match(document.getElementById('detail').textContent, /Lautsprecher oder Kopfhörer/);
+  assert.equal(context.state, 'closed');
+  resolveOutput();
+  await settled();
+  assert.equal(micRequests, 0);
+  assert.equal(call.phase(), 'error');
+});
+
+test('the audio output deadline leaves a pending microphone permission prompt open', async (t) => {
+  let grant;
+  const call = await browser(t, null, null, null, {
+    microphone() { return new Promise((resolve) => { grant = resolve; }); },
+  });
+  await call.advance(120_000);
+  assert.equal(call.phase(), 'starting');
+  grant();
+  await settled();
+  assert.equal(call.phase(), 'listening');
+  call.hangup();
+});
 
 test('silence with no audio frames prompts once, then releases the microphone after 30 listening seconds', async (t) => {
   const call = await browser(t);

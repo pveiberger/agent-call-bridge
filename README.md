@@ -11,7 +11,9 @@ Für deutsche OpenAI-Realtime-Anrufe im Nod-Browserchat benötigt Nod den Endpun
 | WhatsApp Business Platform | Eine für Calling freigeschaltete Cloud-API-Nummer anrufen | Öffentlicher HTTPS-Webhook, erreichbarer WebRTC-Medienpfad und zugelassene Anrufer. [Einrichtung](channels/whatsapp/README.md) |
 | Telegram | Ein eigens verbundenes Telegram-Benutzerkonto anrufen | MTProto-Anmeldung, persistente Sitzung und zugelassene numerische Anrufer-IDs. Ein bestehender Bot kann alternativ einen Button für den Browser-Anruf anbieten. [Einrichtung](channels/telegram/README.md) |
 
-Ein aktives Gespräch hat keine feste Gesamtdauer. Nach 60 Sekunden ohne erkannte Sprache im Hörmodus fragt die Stimme „Sind Sie noch da? Wenn ja, sprechen Sie jetzt.“ Nach der Ansage bleiben 30 Sekunden zum Antworten. Verstreicht auch diese Frist, legt der Adapter auf. Verarbeitungszeit des Assistenten und Wiedergabe zählen nicht als Stille. Die Nachfrage ist fest hinterlegt und erfordert keinen Chatmodell-Aufruf. Während der Assistent spricht, pausiert die Aufnahme.
+Ein aktives Gespräch hat keine feste Gesamtdauer. Bei einem Realtime-Anruf mit Nod kannst du dich zum Auflegen einfach verabschieden, etwa mit „Alles klar, danke dir, dann bis später“. Nod verabschiedet sich kurz und legt nach seinem letzten Wort auf. Hört Nod beim Zuhören 30 Sekunden lang keine Sprache, endet der Anruf automatisch. Mit „Bleib bitte dran“ hast du fünf Minuten Zeit. Dann fragt Nod „Bist du noch da?“ und wartet nach der Frage weitere 30 Sekunden. Du kannst früher weitersprechen oder nochmals um fünf Minuten bitten.
+
+Bei Anrufen über die lokalen Sprachadapter fragt die Stimme nach 60 Sekunden Stille nach und wartet weitere 30 Sekunden auf eine Antwort. Verarbeitungszeit und Wiedergabe zählen bei beiden Varianten nicht als Stille.
 
 Im Browser kann ein Gespräch bei einem Tabwechsel weiterlaufen, solange das Betriebssystem Mikrofon und Audio freigibt. Das Auflegen schließt das Mikrofon und beendet die Wiedergabe. Ein bereits übermittelter Auftrag kann im regulären Chat weiterlaufen.
 

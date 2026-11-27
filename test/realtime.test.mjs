@@ -50,13 +50,15 @@ test('Nod handles project names, new tasks and marking tasks complete', () => {
   assert.ok(requiresProject('Lege eine neue Aufgabe für morgen an.', ''));
   assert.ok(requiresProject('Hake die Aufgabe Blumen kaufen ab.', ''));
   assert.ok(requiresProject('Markiere die Aufgabe als erledigt.', ''));
+  assert.ok(requiresProject('Markier das bitte als erledigt.', ''));
+  assert.ok(!requiresProject('Damit hätten wir für heute alles erledigt.', ''));
   assert.ok(!requiresProject('Was ist zwei plus zwei?', ''));
   assert.ok(!requiresProject('Was ist Notion?', ''));
   assert.ok(!requiresProject('Welche Aufgaben hat der Bundestag?', ''));
 });
 
 async function callRig(t, result = { state: 'reply', text: 'Ist erledigt.' }) {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const track = { enabled: true },
     scope = new AbortController(),
     events = [],
@@ -87,7 +89,20 @@ async function callRig(t, result = { state: 'reply', text: 'Ist erledigt.' }) {
     }
     async setRemoteDescription() {
       this.ontrack({ track: {} });
-      this.dc.onmessage({ data: JSON.stringify({ type: 'session.created' }) });
+      this.dc.onmessage({
+        data: JSON.stringify({
+          type: 'session.created',
+          session: {
+            tools: [
+              {
+                type: 'function',
+                name: 'ask_nod',
+                parameters: { type: 'object', properties: {} },
+              },
+            ],
+          },
+        }),
+      });
     }
   }
   const globals = {
@@ -187,7 +202,11 @@ test('manual mute discards a partial turn and survives response playback', async
   assert.equal(r.track.enabled, false);
   r.mute(false);
   r.emit({ type: 'input_audio_buffer.committed', item_id: 'partial' });
-  r.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'partial', transcript: 'Eine neue Aufgabe anlegen.' });
+  r.emit({
+    type: 'conversation.item.input_audio_transcription.completed',
+    item_id: 'partial',
+    transcript: 'Eine neue Aufgabe anlegen.',
+  });
   assert.equal(r.submissions.length, 0);
   assert.equal(r.track.enabled, true);
   r.speak('direct', 'Wie viel ist zwei plus zwei?');
@@ -233,17 +252,122 @@ test('direct answers, approval handoff and duplicate function events use only th
   assert.equal(r.peers[0].closed, true);
 });
 
-test('one presence question after a minute and hangup thirty seconds after its playback', async (t) => {
+test('thirty seconds of silence closes the peer without generating a response', async (t) => {
   const r = await callRig(t);
-  t.mock.timers.tick(60_000);
+  t.mock.timers.tick(29_999);
+  assert.equal(r.ended(), undefined);
+  t.mock.timers.tick(1);
+  assert.equal(r.ended()[0], 'idle');
+  assert.equal(r.peers[0].closed, true);
+  assert.deepEqual(r.events, []);
+});
+
+test('a farewell hangs up only once the matching spoken goodbye finishes', async (t) => {
+  const r = await callRig(t);
+  r.speak('bye', 'Ja, alles klar, danke dir, dann bis später.');
+  assert.equal(r.events.at(-1).response.metadata.stage, 'end_call');
+  r.emit({ type: 'output_audio_buffer.started', response_id: 'bye-audio' });
+  r.finish('end_call', 'bye', 'bye-audio', r.audio);
+  r.emit({ type: 'output_audio_buffer.stopped', response_id: 'earlier-audio' });
+  t.mock.timers.tick(35_000);
+  assert.equal(r.ended(), undefined);
+  r.emit({ type: 'output_audio_buffer.stopped', response_id: 'bye-audio' });
+  assert.equal(r.ended(), undefined);
+  t.mock.timers.tick(200);
+  assert.equal(r.ended()[0], 'idle');
+  assert.equal(r.scope.signal.aborted, true);
+  assert.equal(r.submissions.length, 0);
+});
+
+test('holding buys five minutes, then thirty seconds from the end of the check-in', async (t) => {
+  const r = await callRig(t);
+  r.speak('wait', 'Leg bitte noch nicht auf.');
+  assert.equal(r.events.at(-1).response.metadata.stage, 'hold_call');
+  r.finish('hold_call', 'wait', 'ack', r.audio);
+  r.emit({ type: 'output_audio_buffer.stopped', response_id: 'ack' });
+  const count = r.events.length;
+  t.mock.timers.tick(210_000);
+  r.speak('noise', '');
+  t.mock.timers.tick(89_999);
+  assert.equal(r.events.length, count);
+  t.mock.timers.tick(1);
   assert.equal(r.events.at(-1).response.metadata.stage, 'presence');
+  const presenceId = r.events.at(-1).response.metadata.turn;
+  r.emit({ type: 'output_audio_buffer.started', response_id: 'p1' });
+  t.mock.timers.tick(40_000);
+  assert.equal(r.ended(), undefined);
   r.emit({ type: 'output_audio_buffer.stopped', response_id: 'p1' });
-  r.finish('presence', 'presence', 'p1', r.audio);
+  r.finish('presence', presenceId, 'p1', r.audio);
   assert.equal(r.track.enabled, true);
   t.mock.timers.tick(29_999);
   assert.equal(r.ended(), undefined);
   t.mock.timers.tick(1);
   assert.equal(r.ended()[0], 'idle');
+});
+
+test('model call controls handle paraphrases and renew a hold, and returning to conversation restores the ordinary timer', async (t) => {
+  const r = await callRig(t);
+  r.speak('pause', 'Kannst du mir kurz die Leitung offenhalten?');
+  assert.deepEqual(
+    r.events.at(-1).response.tools.map((tool) => tool.name),
+    ['ask_nod', 'end_call', 'hold_call'],
+  );
+  const tool = [
+    {
+      type: 'function_call',
+      name: 'hold_call',
+      call_id: 'pause-tool',
+      arguments: '{}',
+    },
+  ];
+  r.finish('answer', 'pause', 'r1', tool);
+  const count = r.events.length;
+  r.finish('answer', 'pause', 'r1', tool);
+  assert.equal(r.events.length, count);
+  assert.equal(r.events.at(-2).item.call_id, 'pause-tool');
+  r.finish('hold_call', 'pause', 'ack', r.audio);
+  r.emit({ type: 'output_audio_buffer.stopped', response_id: 'ack' });
+  t.mock.timers.tick(299_000);
+  r.speak('extend', 'Bleib bitte dran.');
+  r.finish('hold_call', 'extend', 'ack2', r.audio);
+  r.emit({ type: 'output_audio_buffer.stopped', response_id: 'ack2' });
+  t.mock.timers.tick(299_000);
+  assert.equal(r.ended(), undefined);
+  assert.ok(!r.events.some((e) => e.response?.metadata.stage === 'presence'));
+  r.speak('back', 'Danke dir.');
+  assert.equal(r.events.at(-1).response.metadata.stage, 'answer');
+  assert.equal(r.events.at(-1).response.tools, undefined);
+  r.finish('answer', 'back', 'normal', r.audio);
+  r.emit({ type: 'output_audio_buffer.stopped', response_id: 'normal' });
+  t.mock.timers.tick(30_000);
+  assert.equal(r.ended()[0], 'idle');
+});
+
+test('a semantic farewell uses the caller turn and a farewell quoted in a task goes to Nod', async (t) => {
+  const r = await callRig(t);
+  r.speak('note', 'Lege in Notion die Aufgabe „Bis später“ an.');
+  await tick();
+  assert.equal(r.submissions.length, 1);
+  r.finish('result', 'note', 'saved', r.audio);
+  r.emit({ type: 'output_audio_buffer.stopped', response_id: 'saved' });
+  assert.equal(r.ended(), undefined);
+  r.speak(
+    'done',
+    'Damit hätten wir für heute alles erledigt. Wir hören uns morgen!',
+  );
+  r.finish('answer', 'done', 'choice', [
+    {
+      type: 'function_call',
+      name: 'end_call',
+      call_id: 'end',
+      arguments: '{}',
+    },
+  ]);
+  assert.equal(r.events.at(-1).response.metadata.stage, 'end_call');
+  r.emit({ type: 'output_audio_buffer.stopped', response_id: 'bye' });
+  r.finish('end_call', 'done', 'bye', r.audio);
+  t.mock.timers.tick(200);
+  assert.equal(r.peers[0].closed, true);
 });
 
 test('an implicit task uses only spoken words and reports the result once', async (t) => {

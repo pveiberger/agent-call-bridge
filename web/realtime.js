@@ -53,10 +53,15 @@ export function requiresProject(text, project) {
     )
   )
     return true;
-  const task =
-    /\b(?:aufgaben?|to dos?|todos?|erledigt|abgehakt|aufgabenliste)\b/u.test(
+  if (
+    /\b(?:markier\w*|hak\w*|setz\w*)\b.*\b(?:erledigt|abgehakt)\b/u.test(
       normalized,
-    );
+    )
+  )
+    return true;
+  const task = /\b(?:aufgaben?|to dos?|todos?|aufgabenliste)\b/u.test(
+    normalized,
+  );
   return (
     task &&
     /\b(?:meine[nr]?|unsere[nr]?|offen\w*|neue[nr]?|erstelle?\w*|leg\w*|trag\w*|eintragen|markier\w*|hak\w*|abhak\w*|zeig\w*|setz\w*|erledigt|hinzu\w*|speicher\w*|schreib\w*|füg\w*)\b/u.test(
@@ -64,6 +69,55 @@ export function requiresProject(text, project) {
     )
   );
 }
+
+const callTools = [
+  {
+    name: 'end_call',
+    description:
+      'Beende dieses Telefonat, wenn sich die anrufende Person in ihrem letzten Beitrag eindeutig von dir verabschiedet, von sich aus das Gespräch abschließt oder dich jetzt aufzulegen bittet. Ein bloßes Danke, ein Zitat, eine hypothetische Frage, noch offene Anliegen oder die Verabschiedung eines Dritten reichen nicht.',
+  },
+  {
+    name: 'hold_call',
+    description:
+      'Bleib am Telefon, wenn die anrufende Person dich in ihrem letzten Beitrag ausdrücklich bittet dranzubleiben, zu warten oder noch nicht aufzulegen. Nach fünf Minuten fragst du nach. Nicht für Erinnerungen, Zitate oder Wartezeiten einer Aufgabe verwenden.',
+  },
+].map((tool) => ({
+  ...tool,
+  type: 'function',
+  parameters: { type: 'object', properties: {}, additionalProperties: false },
+}));
+
+function callIntent(text) {
+  const words = text
+    .toLocaleLowerCase('de')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+  const phrase = words.replace(
+    /^(?:(?:ja|ok(?:ay)?|gut|passt|alles klar|danke(?: dir| ?schön)?|(?:vielen|besten) dank|nod|na dann|dann|also|bitte)(?: |$))+/u,
+    '',
+  );
+  if (!phrase) return 'acknowledgement';
+  if (
+    /^(?:bis (?:später|bald|dann|morgen)|tschüss?|tschau|ciao|auf wiederhören|mach ?s gut|leg (?:bitte )?(?:jetzt )?auf)(?: (?:nod|bitte|danke))*$/u.test(
+      phrase,
+    )
+  )
+    return 'end_call';
+  if (
+    /^(?:bleibe? (?:bitte )?(?:noch )?(?:kurz )?(?:dran|am telefon|in der leitung)|nicht auflegen|leg (?:bitte )?(?:noch )?nicht auf|warte (?:bitte )?(?:kurz|einen moment))(?: (?:bitte|nod))*$/u.test(
+      phrase,
+    )
+  )
+    return 'hold_call';
+}
+
+const controlSpeech = {
+  end_call:
+    'Verabschiede dich in einem kurzen freundlichen Satz auf Deutsch, ohne Rückfrage. Danach endet der Anruf.',
+  hold_call:
+    'Sage kurz auf Deutsch: Klar, ich bleibe dran. In fünf Minuten frage ich nach.',
+  presence: 'Sage kurz auf Deutsch: Bist du noch da?',
+};
 
 export async function realtimeCall({
   call,
@@ -82,18 +136,22 @@ export async function realtimeCall({
   let peer, channel, sink, output, timer, renewal, setup, retryDisconnect;
   let phase = 'connecting',
     turn,
-    prompt = false,
+    listenMode = 'normal',
+    listenUntil,
+    sessionTools,
     renewSoon = false;
   const history = [];
   let capturingItem, discardedItem;
   const alive = () => !signal.aborted;
   const setTimer = (delay, fn) => {
     clearTimeout(timer);
+    call.silenceDeadline = null;
     timer = setTimeout(fn, delay);
   };
   const send = (value) => channel.send(JSON.stringify(value));
   const closePeer = () => {
     clearTimeout(timer);
+    call.silenceDeadline = null;
     clearTimeout(renewal);
     clearTimeout(setup);
     clearTimeout(retryDisconnect);
@@ -112,37 +170,50 @@ export async function realtimeCall({
   const error = (detail, chat = false) => {
     if (alive()) fail(detail, chat);
   };
-  const response = (stage, options = {}) =>
+  const response = (stage, options = {}) => {
+    turn.stage = stage;
+    turn.drained = new Set();
     send({
       type: 'response.create',
       response: {
-        metadata: { stage, turn: turn?.item || 'presence' },
+        metadata: { stage, turn: turn.item },
         ...options,
       },
     });
+  };
   const remember = (role, text) => {
     if (text) history.push({ role, text: text.slice(0, 1500) });
     if (history.length > 12) history.shift();
   };
-  function listen(afterPrompt = false) {
+  function listen(mode = 'normal', until) {
     if (!alive()) return;
-    if (renewSoon && !afterPrompt) {
+    listenMode = mode;
+    listenUntil = until ?? Date.now() + (mode === 'hold' ? 300_000 : 30_000);
+    if (renewSoon) {
       void connect(false).catch((e) => error(e.message));
       return;
     }
     phase = 'listening';
     turn = null;
-    prompt = afterPrompt;
     track.enabled = !call.userMuted;
     present(
       'listening',
       'Ich höre zu',
-      afterPrompt
-        ? 'Sprich jetzt, um im Anruf zu bleiben.'
-        : 'Du kannst auf Deutsch mit Nod sprechen.',
+      mode === 'hold'
+        ? 'Ich bleibe dran und frage nach fünf Minuten nach.'
+        : mode === 'afterPrompt'
+          ? 'Sprich jetzt, um im Anruf zu bleiben.'
+          : 'Du kannst auf Deutsch mit Nod sprechen.',
     );
-    setTimer(afterPrompt ? 30_000 : 60_000, () => {
-      if (afterPrompt)
+    const delay = Math.max(0, listenUntil - Date.now());
+    const expire = () => {
+      if (
+        !alive() ||
+        phase !== 'listening' ||
+        call.silenceDeadline?.expire !== expire
+      )
+        return;
+      if (mode !== 'hold')
         return end(
           'idle',
           'Anruf beendet',
@@ -150,14 +221,27 @@ export async function realtimeCall({
         );
       track.enabled = false;
       phase = 'reply';
-      prompt = true;
-      response('presence', {
-        tool_choice: 'none',
-        instructions:
-          'Sage auf Deutsch genau: Sind Sie noch da? Wenn ja, sprechen Sie jetzt.',
+      turn = { item: crypto.randomUUID() };
+      controlReply('presence');
+    };
+    setTimer(delay, expire);
+    call.silenceDeadline = { at: performance.now() + delay, expire };
+  }
+  function controlReply(stage, toolId) {
+    if (toolId)
+      send({
+        type: 'conversation.item.create',
+        item: {
+          type: 'function_call_output',
+          call_id: toolId,
+          output: JSON.stringify({ accepted: true }),
+        },
       });
-      watchdog(25_000);
+    response(stage, {
+      tool_choice: 'none',
+      instructions: controlSpeech[stage],
     });
+    watchdog(25_000);
   }
   function watchdog(delay) {
     setTimer(delay, () =>
@@ -173,7 +257,7 @@ export async function realtimeCall({
     if (call.userMuted && phase === 'capturing') {
       discardedItem = capturingItem;
       send({ type: 'input_audio_buffer.clear' });
-      listen(prompt);
+      listen(listenMode, listenUntil);
     }
   };
   function handOff(current, toolId) {
@@ -255,14 +339,26 @@ export async function realtimeCall({
     if (
       phase !== 'reply' ||
       !turn?.finished ||
-      turn.drainedId !== turn.responseId
+      !turn.drained?.has(turn.responseId)
     )
       return;
-    if (turn.answer && !prompt) {
+    if (turn.answer && turn.stage !== 'presence') {
       remember('assistant', turn.answer);
       onAnswer?.(turn.answer);
     }
-    listen(prompt);
+    if (turn.stage === 'end_call') {
+      phase = 'ending';
+      const speakerTail = Math.min(1000, 200 + (context.outputLatency || 0) * 1000);
+      setTimer(speakerTail, () => end('idle', 'Anruf beendet', 'Nod hat sich verabschiedet.'));
+      return;
+    }
+    listen(
+      turn.stage === 'hold_call'
+        ? 'hold'
+        : turn.stage === 'presence'
+          ? 'afterPrompt'
+          : 'normal',
+    );
   }
   function event(e) {
     if (e.type === 'error')
@@ -280,17 +376,17 @@ export async function realtimeCall({
       }
       capturingItem = e.item_id;
       clearTimeout(timer);
+      call.silenceDeadline = null;
       phase = 'capturing';
-      prompt = false;
       present('capturing', 'Du sprichst', '');
     }
     if (
       e.type === 'input_audio_buffer.committed' &&
       ['listening', 'capturing'].includes(phase)
     ) {
-      if (call.userMuted || (discardedItem && e.item_id === discardedItem)) return;
+      if (call.userMuted || (discardedItem && e.item_id === discardedItem))
+        return;
       phase = 'transcribing';
-      prompt = false;
       track.enabled = false;
       turn = { item: e.item_id, id: crypto.randomUUID() };
       present('working', 'Nod hört zu Ende', '');
@@ -310,12 +406,19 @@ export async function realtimeCall({
       phase === 'transcribing'
     ) {
       turn.text = e.transcript?.trim();
-      if (!turn.text) return listen();
+      if (!turn.text) return listen(listenMode, listenUntil);
       remember('user', turn.text);
       phase = 'reply';
       present('working', 'Nod antwortet', '');
       if (requiresProject(turn.text, project)) return handOff(turn);
-      response('answer');
+      const intent = callIntent(turn.text);
+      if (intent === 'hold_call' || intent === 'end_call')
+        return controlReply(intent);
+      turn.offeredControls = !intent && Array.isArray(sessionTools);
+      response(
+        'answer',
+        turn.offeredControls ? { tools: [...sessionTools, ...callTools] } : {},
+      );
       watchdog(40_000);
     }
     if (e.type === 'output_audio_buffer.started' && phase === 'reply') {
@@ -323,9 +426,8 @@ export async function realtimeCall({
       present('speaking', 'Nod spricht', '');
     }
     if (e.type === 'output_audio_buffer.stopped' && phase === 'reply') {
-      if (!turn && prompt) turn = { item: 'presence' };
       if (turn) {
-        turn.drainedId = e.response_id;
+        turn.drained?.add(e.response_id);
         if (!turn.finished) present('working', 'Nod antwortet', '');
         finishReply();
       }
@@ -333,6 +435,13 @@ export async function realtimeCall({
     if (e.type === 'response.done') {
       const r = e.response,
         stage = r.metadata?.stage;
+      if (
+        !turn ||
+        r.metadata?.turn !== turn.item ||
+        phase !== 'reply' ||
+        stage !== turn.stage
+      )
+        return;
       if (r.status !== 'completed')
         return error(
           'OpenAI Realtime: ' +
@@ -340,10 +449,17 @@ export async function realtimeCall({
               r.status_details?.reason ||
               r.status),
         );
-      if (stage === 'presence' && prompt) turn ??= { item: 'presence' };
-      if (!turn || r.metadata?.turn !== turn.item || phase !== 'reply') return;
       const tools = r.output?.filter((x) => x.type === 'function_call') || [];
       if (tools.length) {
+        if (
+          stage === 'answer' &&
+          turn.offeredControls &&
+          tools.length === 1 &&
+          tools[0].call_id &&
+          callTools.some((tool) => tool.name === tools[0].name)
+        ) {
+          return controlReply(tools[0].name, tools[0].call_id);
+        }
         if (
           stage !== 'answer' ||
           tools.length !== 1 ||
@@ -376,7 +492,7 @@ export async function realtimeCall({
     track.enabled = false;
     closePeer();
     turn = null;
-    prompt = false;
+    sessionTools = undefined;
     capturingItem = discardedItem = undefined;
     renewSoon = false;
     phase = 'connecting';
@@ -426,15 +542,18 @@ export async function realtimeCall({
       }
       renewal = setTimeout(() => {
         renewSoon = true;
-        if (phase === 'listening' && !prompt)
+        if (phase === 'listening')
           void connect(false).catch((e) => error(e.message));
       }, 53 * 60_000);
-      listen();
+      listen(listenMode, first ? undefined : listenUntil);
     }
     dc.onmessage = ({ data }) => {
       if (!current()) return;
       try {
         const e = JSON.parse(data);
+        if (e.type === 'session.created' || e.type === 'session.updated') {
+          if (Array.isArray(e.session?.tools)) sessionTools = e.session.tools;
+        }
         if (e.type === 'session.created') {
           sessionReady = true;
           void ready().catch((e) => error(e.message));

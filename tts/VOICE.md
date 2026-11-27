@@ -1,0 +1,7 @@
+# German speech
+
+The container synthesizes German speech with Piper 1.8.0 and Thorsten Müller’s German voice. The pinned voice uses the retrained Flemish `rdh` base. Its model card names CC0 for both the German recording dataset and the base voice’s dataset. The build verifies SHA-256 hashes for the model, its configuration, the model card and the Linux AMD64 Python wheels. The model card is included in `/opt/stimme/MODEL_CARD`. Piper is distributed under GPL-3.0. [Voice and model card](https://huggingface.co/rhasspy/piper-voices/blob/5ec43b186ef915a195d3ddbcfd9916e76c503c3f/de/de_DE/thorsten/medium/MODEL_CARD) · [Piper voice-licensing notes](https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/COMMERCIAL_USE.md) · [Piper source and license](https://github.com/OHF-Voice/piper1-gpl/tree/v1.8.0)
+
+The call backend posts UTF-8 JSON containing a single `text` string to `http://call-tts:8090/synthesize`. The response is mono 16-bit PCM WAV at 22,050 Hz. Send one short sentence or paragraph at a time, up to 1,600 characters. A busy worker responds with HTTP 503 and a one-second retry interval. HTTP 422 indicates that the supplied text produced no speech. Health checks use `GET /health`.
+
+Run the service on the private Compose network shared with the authenticated call backend. Keep port 8090 unpublished. The model runs on CPU, uses two inference threads and has no runtime network dependency.

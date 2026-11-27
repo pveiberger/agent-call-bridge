@@ -1,0 +1,20 @@
+services:
+  whatsapp-linked:
+    profiles: [whatsapp-linked]
+    build: ./channels/whatsapp-linked
+    image: agent-call-whatsapp-linked:local
+    env_file: .env.whatsapp-linked
+    networks: [agents]
+    volumes: [whatsapp-linked-session:/session]
+    restart: unless-stopped
+    depends_on: [bridge]
+    init: true
+    read_only: true
+    logging:
+      driver: none
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 384m
+    pids_limit: 160
+volumes:
+  whatsapp-linked-session: {}

@@ -1,0 +1,4 @@
+py-tgcalls==3.0.1
+ntgcalls==3.0.7
+Telethon==1.46.0
+webrtcvad-wheels==2.0.14.post1

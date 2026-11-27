@@ -1,0 +1,51 @@
+name: agent-call-bridge
+services:
+  bridge:
+    build: .
+    image: agent-call-bridge:local
+    restart: unless-stopped
+    init: true
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN in .env}
+      AGENT_BACKEND: ${AGENT_BACKEND:-nod}
+      WEB_AUTH: ${WEB_AUTH:-token}
+      BRIDGE_WEB_TOKEN: ${BRIDGE_WEB_TOKEN:-}
+      BRIDGE_CHANNEL_SECRET: ${BRIDGE_CHANNEL_SECRET:-}
+      NOD_BASE_URL: ${NOD_BASE_URL:-http://nod-server:4310}
+      NOD_PUBLIC_URL: ${NOD_PUBLIC_URL:-}
+      NOD_AUTH_TOKEN: ${NOD_AUTH_TOKEN:-}
+      NOD_PORT: ${NOD_PORT:-4310}
+      AGENT_BASE_URL: ${AGENT_BASE_URL:-}
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
+      AGENT_MODEL: ${AGENT_MODEL:-}
+      CHAT_URL: ${CHAT_URL:-}
+      STT_BASE_URL: ${STT_BASE_URL:-}
+      STT_API_KEY: ${STT_API_KEY:-}
+      STT_MODEL: ${STT_MODEL:-}
+    ports:
+      - "127.0.0.1:8091:8091"
+    networks: [agents, speech]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 384m
+    pids_limit: 128
+    depends_on:
+      call-tts:
+        condition: service_healthy
+  call-tts:
+    build: ./tts
+    image: agent-call-tts:local
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    mem_limit: 640m
+    pids_limit: 128
+    networks: [speech]
+networks:
+  agents: {}
+  speech:
+    internal: true

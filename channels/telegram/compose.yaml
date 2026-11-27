@@ -1,0 +1,25 @@
+services:
+  telegram:
+    profiles: [telegram]
+    build:
+      context: ./channels
+      dockerfile: telegram/Dockerfile
+    image: agent-call-telegram:local
+    restart: unless-stopped
+    init: true
+    env_file: .env.telegram
+    networks: [agents]
+    volumes:
+      - telegram-session:/session
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 2
+    pids_limit: 192
+    mem_limit: 512m
+    depends_on: [bridge]
+
+volumes:
+  telegram-session: {}

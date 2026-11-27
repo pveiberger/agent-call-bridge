@@ -1,0 +1,7 @@
+**
+!common/
+!common/media.py
+!whatsapp/
+!whatsapp/requirements.txt
+!whatsapp/adapter.py
+!whatsapp/playback.py

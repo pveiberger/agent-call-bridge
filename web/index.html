@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#fafafa" />
+    <title>Anruf mit Nod</title>
+    <link rel="icon" href="/anruf/call-icon.svg" />
+    <link rel="stylesheet" href="/anruf/call.css" />
+    <script type="module" src="/anruf/call.js"></script>
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="/anruf/" aria-label="Zur Anrufseite"
+        ><span class="brand-ring" aria-hidden="true"></span
+        ><span id="agent">Nod</span></a
+      >
+      <a id="header-chat" class="chat" href="/"
+        >Zum Chat <span aria-hidden="true">↗</span></a
+      >
+    </header>
+    <main>
+      <section class="stage" aria-labelledby="title">
+        <div class="visual" aria-hidden="true">
+          <div class="aura"></div>
+          <div class="mark"></div>
+        </div>
+        <h1 id="title">Anruf mit Nod</h1>
+        <div id="feedback" role="status" aria-live="polite" aria-atomic="true">
+          <p id="status">Bereit zum Anrufen</p>
+          <p id="detail">
+            Sprich nach dem Start einfach los. Nod antwortet dir nach einer
+            kurzen Sprechpause.
+          </p>
+        </div>
+        <button id="toggle" type="button" aria-pressed="false">
+          <span class="button-mark" aria-hidden="true"></span
+          ><span id="label">Anruf starten</span>
+        </button>
+        <a id="chat-action" href="/" hidden>Im Chat öffnen ↗</a>
+      </section>
+      <details id="last" hidden>
+        <summary>Letzte Antwort lesen</summary>
+        <p id="answer" dir="auto"></p>
+      </details>
+      <noscript>Aktiviere JavaScript, um den Anruf zu starten.</noscript>
+    </main>
+  </body>
+</html>

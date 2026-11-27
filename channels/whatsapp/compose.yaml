@@ -1,0 +1,19 @@
+services:
+  whatsapp:
+    profiles: [whatsapp]
+    build:
+      context: ./channels
+      dockerfile: whatsapp/Dockerfile
+    image: agent-call-whatsapp:local
+    restart: unless-stopped
+    init: true
+    env_file: .env.whatsapp
+    ports:
+      - "127.0.0.1:8092:8092"
+    networks: [agents]
+    depends_on: [bridge]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 384m
+    pids_limit: 128

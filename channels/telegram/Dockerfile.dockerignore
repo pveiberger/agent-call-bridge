@@ -1,0 +1,7 @@
+**
+!common/
+!common/media.py
+!telegram/
+!telegram/requirements.txt
+!telegram/adapter.py
+!telegram/send_link.py

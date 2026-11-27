@@ -135,10 +135,16 @@ async function browser(t, getTurn, streamSpeech, intercept, devices = {}) {
         : delete globalThis[key],
     );
   }
-  await import('../web/call.js?session=' + randomUUID());
-  await settled();
-  document.getElementById('toggle').dispatchEvent(new Event('click'));
-  await settled();
+  let client, state;
+  if (devices.embedded) {
+    const { createCallClient } = await import('../web/call-client.js');
+    client = createCallClient({ onState: (next) => { state = next; } });
+  } else {
+    await import('../web/call.js?session=' + randomUUID());
+    await settled();
+    document.getElementById('toggle').dispatchEvent(new Event('click'));
+    await settled();
+  }
   const finishAudio = async () => {
     const source = playing.shift();
     assert.ok(source, 'expected audio playback');
@@ -148,9 +154,10 @@ async function browser(t, getTurn, streamSpeech, intercept, devices = {}) {
   return {
     track,
     requests,
+    client,
     playing,
     finishAudio,
-    phase: () => document.body.dataset.phase,
+    phase: () => state?.phase ?? document.body.dataset.phase,
     emit: (type) =>
       worklet.port.onmessage({ data: { type, wav: new ArrayBuffer(50) } }),
     async advance(ms) {
@@ -173,6 +180,31 @@ async function browser(t, getTurn, streamSpeech, intercept, devices = {}) {
       document.getElementById('toggle').dispatchEvent(new Event('click')),
   };
 }
+
+test('preloading the in-chat call is passive and disposing releases a microphone granted after navigation', async (t) => {
+  let grant;
+  let microphoneRequests = 0;
+  const call = await browser(t, null, null, null, {
+    embedded: true,
+    microphone() {
+      microphoneRequests++;
+      return new Promise((resolve) => { grant = resolve; });
+    },
+  });
+  assert.equal(call.requests.length, 0);
+  assert.equal(microphoneRequests, 0);
+  void call.client.start();
+  void call.client.start();
+  await settled();
+  assert.equal(microphoneRequests, 1);
+  assert.equal(call.requests.filter((request) => request.route === 'session').length, 1);
+  call.client.dispose();
+  grant();
+  await settled();
+  assert.equal(call.track.stopped, true);
+  await call.client.start();
+  assert.equal(microphoneRequests, 1);
+});
 
 test('a stalled audio output releases its context and gives a speaker hint before requesting the microphone', async (t) => {
   let context, resolveOutput;

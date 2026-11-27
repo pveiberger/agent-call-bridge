@@ -61,6 +61,8 @@ networks:
 
 Wer die Seite **unter demselben Origin wie Nod** betreibt, kann den bestehenden Browser-Login mit `WEB_AUTH=nod` verwenden. Dafür müssen `PUBLIC_ORIGIN` und `NOD_PUBLIC_URL` in Schema, Host und Port übereinstimmen. Nod muss den eigenen Zugriffsschlüssel erzwingen. Die Bridge prüft bei jeder Browseranfrage, dass Nod eine anonyme Anfrage abweist und die angemeldete Person erkennt. Bei reinem Browserbetrieb benötigt die Bridge dann keinen gespeicherten Nod-Token. Eine normale Nod-Anmeldung öffnet den Call-Zugang, danach erneut `/anruf/` aufrufen.
 
+Für eine Anruftaste im eigenen Chat kann dessen Oberfläche das ES-Modul `/anruf/call-client.js` vom selben Origin vorladen. `createCallClient({ onState, onAnswer })` liefert einen Client. Die Anruftaste ruft `client.start()` direkt beim Klick auf. `onState` liefert Status, Detailtext und den aktiven Gesprächszustand, `onAnswer` den Antworttext. Beim Auflegen ruft die Oberfläche `client.stop()` auf, beim Verlassen des Chats `client.dispose()`. Das Vorladen allein öffnet das Mikrofon nicht.
+
 ### Hermes und OpenClaw
 
 Beide Adapter verwenden den Agenten-Server mit seinem normalen Chat-Completions-Endpunkt. Der Assistent behält seine eigenen Tools und Berechtigungen. Zusätzlich benötigt die Bridge einen Transkriptionsdienst mit OpenAI-kompatiblem `POST /audio/transcriptions`. `STT_BASE_URL` zeigt auf den API-Prefix, beispielsweise `https://api.openai.com/v1`, `STT_MODEL` auf ein dort unterstütztes Modell, beispielsweise `whisper-1`. Für einen authentifizierten Dienst `STT_API_KEY` setzen. An diesen Dienst geht die Audioaufnahme. Die lokale Sprachausgabe verarbeitet den Antworttext.

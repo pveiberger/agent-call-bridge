@@ -229,6 +229,25 @@ test('a stalled audio output releases its context and gives a speaker hint befor
   assert.equal(call.phase(), 'error');
 });
 
+test('a brief audio route change preserves the call and a persistent interruption releases the mic', async (t) => {
+  let context;
+  const call = await browser(t, null, null, null, { resume(ctx) { context = ctx; } });
+  context.state = 'interrupted';
+  context.onstatechange();
+  await call.advance(600);
+  context.state = 'running';
+  context.onstatechange();
+  await call.advance(1000);
+  assert.equal(call.phase(), 'listening');
+  assert.equal(call.track.stopped, false);
+  context.state = 'suspended';
+  context.onstatechange();
+  await call.advance(1000);
+  assert.equal(call.phase(), 'idle');
+  assert.equal(call.track.stopped, true);
+  assert.equal(context.state, 'closed');
+});
+
 test('the audio output deadline leaves a pending microphone permission prompt open', async (t) => {
   let grant;
   const call = await browser(t, null, null, null, {

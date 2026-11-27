@@ -41,6 +41,7 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
     const call = active;
     active = null;
     if (call) {
+      clearTimeout(call.audioInterruption);
       stopSilenceTimer(call);
       call.preparation?.controller.abort();
       call.controller.abort();
@@ -226,6 +227,17 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
     );
   }
 
+  function audioStateChanged(call) {
+    const interrupted = () => ["suspended", "interrupted"].includes(call.context.state);
+    clearTimeout(call.audioInterruption);
+    if (active !== call || (!call.stream && phase === "starting") || !interrupted()) return;
+    // Mobile browsers can briefly suspend playback while opening the microphone.
+    call.audioInterruption = setTimeout(() => {
+      if (active === call && interrupted())
+        end("idle", "Anruf pausiert", "Dein Gerät hat den Ton unterbrochen. Starte den Anruf erneut.");
+    }, 1000);
+  }
+
   async function capture(call, auth) {
     if (auth.realtime === true) {
       present("starting", "Es klingelt …", "Der Anruf verbindet dich mit OpenAI Realtime.");
@@ -245,6 +257,7 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
       return;
     }
     call.stream = stream;
+    audioStateChanged(call);
     stream.getAudioTracks()[0].addEventListener("ended", () => {
       if (active === call)
         end(
@@ -428,19 +441,7 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
         auth.speechStream === true && typeof ReadableStream !== "undefined";
       sessionInfo(auth);
       call.prepareShortSpeech = auth.prepareShortSpeech === true;
-      ctx.onstatechange = () => {
-        if (
-          active === call &&
-          phase !== "starting" &&
-          (ctx.state === "suspended" || ctx.state === "interrupted")
-        ) {
-          end(
-            "idle",
-            "Anruf pausiert",
-            "Dein Gerät hat den Ton unterbrochen. Starte den Anruf erneut.",
-          );
-        }
-      };
+      ctx.onstatechange = () => audioStateChanged(call);
       await capture(call, auth);
       check(call);
       keepScreenAwake(call);

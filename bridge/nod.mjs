@@ -10,6 +10,12 @@ export function nodAdapter({ base, authority, transcribe }) {
   // Keep only the binding for a rejected recording. Its spoken reply does
   // not enter Nod's chat or cause any tool use. A retried upload is idempotent.
   const clarifications = new Map();
+  const preparations = new Map();
+  const privateInputPending = (state) => state.verificationRequests?.length ||
+    state.messages?.some((m) => m.approval?.state === 'pending');
+  function audioBinding(audio, auth) {
+    return createHash('sha256').update(auth.Cookie || auth.Authorization || '').update('\0').update(audio).digest('hex');
+  }
   function clarificationReceipt(messageId, callId, audio, remember = false) {
     const prior = clarifications.get(messageId);
     if (!prior && !remember) return;
@@ -53,14 +59,31 @@ export function nodAdapter({ base, authority, transcribe }) {
         throw new Failure(401, 'Bitte bei Nod anmelden.');
       }
     },
+    async prepare(audio, messageId, callId, auth, signal) {
+      if (!transcribe || audio.length > 192_044 || preparations.size >= 4 || preparations.has(callId)) return;
+      const entry = { id: messageId, hash: audioBinding(audio, auth) };
+      const forget = () => {
+        if (preparations.get(callId) === entry) preparations.delete(callId);
+      };
+      preparations.set(callId, entry);
+      const timer = setTimeout(forget, 8_000);
+      timer.unref();
+      entry.result = (async () => {
+        const state = await api('/api/state', auth, { signal });
+        if (privateInputPending(state)) return;
+        return transcribe(audio, signal);
+      })().then(text => ({ text }), error => ({ error }));
+      const result = await entry.result;
+      if (signal?.aborted || (!result.text && !(result.error instanceof UnclearTranscription))) {
+        clearTimeout(timer);
+        forget();
+      }
+    },
     async submit(audio, messageId, callId, auth, signal) {
       const localId = clarificationReceipt(messageId, callId, audio);
       if (localId) return localId;
       const state = await api('/api/state', auth, { signal });
-      if (
-        state.verificationRequests?.length ||
-        state.messages?.some((m) => m.approval?.state === 'pending')
-      ) {
+      if (privateInputPending(state)) {
         throw new Failure(
           409,
           'In Nod wartet eine Freigabe oder private Eingabe. Bitte öffne den Chat.',
@@ -78,7 +101,13 @@ export function nodAdapter({ base, authority, transcribe }) {
       if (transcribe) {
         let transcript;
         try {
-          transcript = await transcribe(audio, signal);
+          const prepared = preparations.get(callId);
+          const matches = prepared?.id === messageId && prepared.hash === audioBinding(audio, auth);
+          const result = matches ? await prepared.result : undefined;
+          if (matches) preparations.delete(callId);
+          signal?.throwIfAborted();
+          if (result?.error instanceof UnclearTranscription) throw result.error;
+          transcript = result?.text ?? await transcribe(audio, signal);
         } catch (error) {
           if (!(error instanceof UnclearTranscription)) throw error;
           return clarificationReceipt(messageId, callId, audio, true);
@@ -90,8 +119,7 @@ export function nodAdapter({ base, authority, transcribe }) {
         if (
           current.threadId !== state.threadId ||
           current.chatClearedAt !== state.chatClearedAt ||
-          current.verificationRequests?.length ||
-          current.messages?.some((m) => m.approval?.state === 'pending')
+          privateInputPending(current)
         )
           throw new Failure(
             409,
@@ -104,6 +132,7 @@ export function nodAdapter({ base, authority, transcribe }) {
       }
       const receipt = await api(route, auth, {
         ...payload,
+        headers: { ...payload.headers, 'X-Nod-Input-Mode': 'voice-call' },
         signal,
         timeout: 135_000,
       });

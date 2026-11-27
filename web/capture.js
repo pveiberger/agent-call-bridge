@@ -1,11 +1,11 @@
 import { VoiceDetector } from "./vad.js";
 
 class NodCapture extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
     this.vad = new VoiceDetector(sampleRate, (event) => {
       this.port.postMessage(event, event.wav ? [event.wav] : []);
-    });
+    }, options?.processorOptions?.prepareShortSpeech === true);
     this.port.onmessage = ({ data }) => this.vad.arm(data === "listen");
   }
 

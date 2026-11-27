@@ -63,6 +63,8 @@ Wer die Seite **unter demselben Origin wie Nod** betreibt, kann den bestehenden 
 
 Für eine Anruftaste im eigenen Chat kann dessen Oberfläche das ES-Modul `/anruf/call-client.js` vom selben Origin vorladen. `createCallClient({ onState, onAnswer })` liefert einen Client. Die Anruftaste ruft `client.start()` direkt beim Klick auf. `onState` liefert Status, Detailtext und den aktiven Gesprächszustand, `onAnswer` den Antworttext. Beim Auflegen ruft die Oberfläche `client.stop()` auf, beim Verlassen des Chats `client.dispose()`. Das Vorladen allein öffnet das Mikrofon nicht.
 
+Bei lokaler Spracherkennung mit Parakeet und Whisper kann `CALL_PREPARE_SHORT_SPEECH=true` kurze Beiträge schon während einer möglichen Satzpause transkribieren. Erst das erkannte Satzende löst einen Auftrag an Nod aus. Sprichst du weiter, prüft die Bridge die vollständige Aufnahme. Nur für exakt dieselben Audiodaten und dieselbe Anmeldung übernimmt sie ein vorbereitetes Ergebnis.
+
 ### Hermes und OpenClaw
 
 Beide Adapter verwenden den Agenten-Server mit seinem normalen Chat-Completions-Endpunkt. Der Assistent behält seine eigenen Tools und Berechtigungen. Zusätzlich benötigt die Bridge einen Transkriptionsdienst mit OpenAI-kompatiblem `POST /audio/transcriptions`. `STT_BASE_URL` zeigt auf den API-Prefix, beispielsweise `https://api.openai.com/v1`, `STT_MODEL` auf ein dort unterstütztes Modell, beispielsweise `whisper-1`. Für einen authentifizierten Dienst `STT_API_KEY` setzen. An diesen Dienst geht die Audioaufnahme. Die lokale Sprachausgabe verarbeitet den Antworttext.

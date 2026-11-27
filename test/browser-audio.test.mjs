@@ -108,3 +108,28 @@ test('stationary fan, broadband noise and clicks cannot keep an unattended micro
     assert.ok(events.includes('utterance'), kind + ' followed by quiet speech');
   }
 });
+
+
+test('a tentative pause preserves the exact final audio unless speech continues', () => {
+  const rate = 48_000;
+  for (const continued of [false, true]) {
+    const events = [];
+    const detector = new VoiceDetector(rate, (event) => events.push(event), true);
+    const say = () => detector.feed(syllables(rate, 26));
+    const pause = (frames) => detector.feed(new Float32Array(frames * rate / 50));
+    detector.arm(true);
+    pause(20);
+    say();
+    pause(30);
+    assert.equal(events.filter((e) => e.type === 'prepare').length, 1);
+    assert.equal(events.some((e) => e.type === 'utterance'), false);
+    if (continued) say();
+    pause(75);
+    const prepared = events.filter((e) => e.type === 'prepare');
+    const final = events.filter((e) => e.type === 'utterance');
+    assert.equal(final.length, 1);
+    assert.deepEqual(Buffer.from(prepared.at(-1).wav), Buffer.from(final[0].wav));
+    assert.equal(events.some((e) => e.type === 'continued'), continued);
+    if (continued) assert.notDeepEqual(Buffer.from(prepared[0].wav), Buffer.from(final[0].wav));
+  }
+});

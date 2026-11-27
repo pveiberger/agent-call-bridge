@@ -111,6 +111,7 @@ function isWav(bytes) {
 }
 const busy = new Set();
 const waiting = new Set();
+const prepareShortSpeech = kind === 'nod' && !!e.STT_BASE_URL && !!e.STT_FAST_BASE_URL && e.CALL_PREPARE_SHORT_SPEECH === 'true';
 async function route(req, res, signal) {
   const path = new URL(req.url, 'http://localhost').pathname;
   if (path === '/health' && req.method === 'GET')
@@ -176,19 +177,27 @@ async function route(req, res, signal) {
     return send(res, 200, {
       ok: true,
       agent: names[kind],
+      ...(prepareShortSpeech ? { prepareShortSpeech: true } : {}),
       ...(e.TTS_ENGINE === 'pocket' ? { speechStream: true } : {}),
       chatUrl: e.CHAT_URL || (authMode === 'nod' ? '/' : null),
     });
   }
   const call = req.headers['x-call-id'];
   if (!uuid.test(call || '')) throw new Failure(400, 'Ungültige Anruf-ID.');
-  if (action === 'utterance' && req.method === 'POST') {
+  const preparation = prepareShortSpeech && web && action === 'prepare-utterance';
+  if ((action === 'utterance' || preparation) && req.method === 'POST') {
     const id = req.headers['x-request-id'];
     if (
       !uuid.test(id || '') ||
       req.headers['content-type']?.split(';')[0] !== 'audio/wav'
     )
       throw new Failure(400, 'WAV und Beitrags-ID erforderlich.');
+    if (preparation) {
+      const bytes = await read(req, 192_044);
+      if (!isWav(bytes)) throw new Failure(400, 'Ungültige WAV-Aufnahme.');
+      await adapter.prepare(bytes, id, call, auth, signal);
+      return send(res, 200, { ok: true });
+    }
     if (busy.has(call) || busy.size >= 4)
       throw new Failure(429, 'Eine Aufnahme wird bereits verarbeitet.');
     busy.add(call);

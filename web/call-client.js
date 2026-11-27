@@ -41,6 +41,7 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
     active = null;
     if (call) {
       stopSilenceTimer(call);
+      call.preparation?.controller.abort();
       call.controller.abort();
       call.listen?.(false);
       call.stream?.getTracks().forEach((track) => track.stop());
@@ -83,7 +84,7 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
       headers: { ...options.headers, "X-Call-Id": call.id },
       credentials: "same-origin",
       cache: "no-store",
-      signal: call.controller.signal,
+      signal: options.signal ?? call.controller.signal,
     });
     check(call);
     if (response.ok) return response;
@@ -271,6 +272,20 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
           "Ich höre zu",
           "Sprich jetzt. Nach einer kurzen Sprechpause übernimmt " + agent + ".",
         );
+      if (data.type === "prepare" && call.prepareShortSpeech) {
+        const preparation = { id: crypto.randomUUID(), controller: new AbortController() };
+        call.preparation?.controller.abort();
+        call.preparation = preparation;
+        void request(call, "prepare-utterance", {
+          method: "POST", signal: preparation.controller.signal,
+          headers: { "Content-Type": "audio/wav", "X-Request-Id": preparation.id },
+          body: data.wav,
+        }).catch(() => {});
+      }
+      if (data.type === "continued") {
+        call.preparation?.controller.abort();
+        call.preparation = null;
+      }
       if (data.type === "utterance")
         talk(call, data.wav).catch((error) => finishError(call, error));
     };
@@ -279,6 +294,7 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
       await ctx.audioWorklet.addModule("/anruf/capture.js");
       check(call);
       processor = new AudioWorkletNode(ctx, "nod-call-capture", {
+        processorOptions: { prepareShortSpeech: call.prepareShortSpeech },
         numberOfOutputs: 1,
         outputChannelCount: [1],
       });
@@ -294,7 +310,7 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
       call.listen = (enabled) =>
         processor.port.postMessage(enabled ? "listen" : "mute");
     } else {
-      const detector = new VoiceDetector(ctx.sampleRate, event);
+      const detector = new VoiceDetector(ctx.sampleRate, event, call.prepareShortSpeech);
       processor = ctx.createScriptProcessor(1024, 1, 1);
       processor.onaudioprocess = (e) =>
         detector.feed(e.inputBuffer.getChannelData(0));
@@ -396,6 +412,7 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
       call.speechStream =
         auth.speechStream === true && typeof ReadableStream !== "undefined";
       sessionInfo(auth);
+      call.prepareShortSpeech = auth.prepareShortSpeech === true;
       ctx.onstatechange = () => {
         if (
           active === call &&
@@ -491,11 +508,12 @@ export function createCallClient({ onState, onAnswer, onSession, previewSession 
         method: "POST",
         headers: {
           "Content-Type": "audio/wav",
-          "X-Request-Id": crypto.randomUUID(),
+          "X-Request-Id": call.preparation?.id ?? crypto.randomUUID(),
         },
         body: wav,
       })
     ).json();
+    call.preparation = null;
     if (!submitted.id || typeof submitted.id !== "string")
       throw new CallError(
         "Die Aufnahme konnte nicht zugeordnet werden. Prüfe den Verlauf bei deinem Assistenten.",

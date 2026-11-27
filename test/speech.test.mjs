@@ -7,6 +7,7 @@ import { nodAdapter } from '../bridge/nod.mjs';
 import {
   speechOutput,
   streamPocketAudio,
+  trimSpeechLead,
   transcriber,
 } from '../bridge/speech.mjs';
 
@@ -255,4 +256,16 @@ test('Pocket output finalizes WAV, streams PCM, caches only fixed announcements'
   ))
     chunks.push(chunk);
   assert.deepEqual(Buffer.concat(chunks), wav.subarray(44));
+});
+
+
+test('streaming speech removes only leading silence and preserves quiet consonants across split samples', async () => {
+  const pcm = Buffer.alloc(28_000);
+  pcm.writeInt16LE(36, 12_000);
+  pcm.writeInt16LE(12_000, 13_000);
+  pcm.writeInt16LE(100, 24_000);
+  const pieces = [pcm.subarray(0, 3), pcm.subarray(3, 12_001), pcm.subarray(12_001)];
+  const result = [];
+  for await (const part of trimSpeechLead(pieces)) result.push(part);
+  assert.deepEqual(Buffer.concat(result), pcm.subarray(12_000 - 2160));
 });

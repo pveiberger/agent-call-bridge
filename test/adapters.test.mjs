@@ -382,3 +382,37 @@ test('browser origin requires secure remote transport and an exact Nod cookie or
     assert.throws(() => webOrigins('https://agent.example', nodOrigin, true));
   }
 });
+
+
+test('tentative transcripts never submit work and are reusable only for the exact bytes and caller', async (t) => {
+  const threadId = randomUUID(), turnId = randomUUID(), call = randomUUID();
+  const audio = Buffer.from('first clause'), extended = Buffer.from('first clause with a correction');
+  let transcriptions = 0, verificationRequests = [];
+  const submitted = [];
+  const base = await fixture(t, (req, body) => {
+    if (req.url === '/api/state') return { threadId, messages: [], verificationRequests };
+    assert.equal(req.url, '/api/messages');
+    assert.equal(req.headers['x-nod-input-mode'], 'voice-call');
+    const message = JSON.parse(body);
+    submitted.push(message.text);
+    return { messageId: message.clientMessageId, turnId };
+  });
+  const a = nodAdapter({ base, authority: 'localhost', transcribe: async (bytes) => {
+    transcriptions++;
+    return bytes.toString();
+  } });
+  const owner = { Cookie: 'first' };
+  for (const [final, auth, expectedCalls] of [[audio, owner, 1], [extended, owner, 2], [audio, { Cookie: 'second' }, 2]]) {
+    const id = randomUUID(), channel = randomUUID(), count = submitted.length, callsBefore = transcriptions;
+    await a.prepare(audio, id, channel, owner);
+    assert.equal(submitted.length, count);
+    await a.submit(final, id, channel, auth);
+    assert.equal(submitted.at(-1), final.toString());
+    assert.equal(transcriptions - callsBefore, expectedCalls);
+  }
+  const id = randomUUID();
+  await a.prepare(audio, id, call, owner);
+  verificationRequests = [{}];
+  await assert.rejects(a.submit(audio, id, call, owner), { status: 409 });
+  assert.equal(submitted.length, 3);
+});

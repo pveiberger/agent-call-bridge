@@ -1,7 +1,8 @@
 // Work in 20 ms frames so timings stay stable across device sample rates.
 export class VoiceDetector {
-  constructor(sampleRate, notify) {
+  constructor(sampleRate, notify, prepareShortSpeech = false) {
     this.notify = notify;
+    this.prepareShortSpeech = prepareShortSpeech;
     this.frame = new Float32Array(Math.round(sampleRate / 50));
     this.arm(false);
   }
@@ -15,6 +16,8 @@ export class VoiceDetector {
     this.silence = 0;
     this.voiced = 0;
     this.endSilenceFrames = 40;
+    this.prepared = false;
+    this.preparations = 0;
     this.bands = [];
     this.quietFrames = 0;
     this.background = null;
@@ -59,6 +62,10 @@ export class VoiceDetector {
 
     this.recording.push(pcm);
     if (speech) {
+      if (this.prepared) {
+        this.prepared = false;
+        this.notify({ type: "continued" });
+      }
       // Leave more room for unfinished sentences when the speaker hesitates.
       if (this.silence >= 18) this.endSilenceFrames = 55;
       this.voiced++;
@@ -75,6 +82,12 @@ export class VoiceDetector {
       if (this.voiced >= 6 && this.silence === 0)
         this.notify({ type: "activity" });
       this.silence++;
+      if (this.prepareShortSpeech && this.silence === 19 && this.voiced >= 6 &&
+          this.preparations < 2 && this.recording.length <= 300) {
+        this.prepared = true;
+        this.preparations++;
+        this.notify({ type: "prepare", wav: this.recordedWav() });
+      }
     }
     if (this.silence < this.endSilenceFrames && this.recording.length < 4500)
       return;
@@ -84,13 +97,13 @@ export class VoiceDetector {
       return;
     }
     // Keep a little of the final pause and preserve the first consonant.
-    const frames = this.recording.slice(
-      0,
-      this.recording.length - Math.max(0, this.silence - 9),
-    );
-    const wav = makeWav(frames);
+    const wav = this.recordedWav();
     this.arm(false);
     this.notify({ type: "utterance", wav });
+  }
+
+  recordedWav() {
+    return makeWav(this.recording.slice(0, this.recording.length - Math.max(0, this.silence - 9)));
   }
 
   speechChanges(pcm) {

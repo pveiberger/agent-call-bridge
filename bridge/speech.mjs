@@ -171,7 +171,7 @@ function finishPocketWave(wav) {
   return wav;
 }
 
-export async function* streamPocketAudio(base, text, signal) {
+async function* pocketPcm(base, text, signal) {
   const response = await fetch(base.replace(/\/$/, '') + '/tts', {
     method: 'POST',
     body: new URLSearchParams({ text }),
@@ -202,6 +202,33 @@ export async function* streamPocketAudio(base, text, signal) {
   }
   if (!bytes || bytes % 2)
     throw new Failure(502, 'Unvollständige Sprachausgabe.');
+}
+
+// Preserve 45 ms before the first quiet consonant. Inspect at most the
+// first second, then pass every PCM byte through, including sentence pauses.
+export async function* trimSpeechLead(chunks) {
+  const maxLeadBytes = 48_000;
+  const preRollBytes = 2_160;
+  let lead = Buffer.alloc(0), scanned = 0, started = false;
+  for await (const chunk of chunks) {
+    if (started) {
+      yield chunk;
+      continue;
+    }
+    lead = Buffer.concat([lead, chunk]);
+    const limit = Math.min(lead.length, maxLeadBytes);
+    while (scanned + 1 < limit && Math.abs(lead.readInt16LE(scanned)) < 32) scanned += 2;
+    if (scanned + 1 < limit || lead.length >= maxLeadBytes) {
+      yield lead.subarray(Math.max(0, scanned - preRollBytes));
+      lead = Buffer.alloc(0);
+      started = true;
+    }
+  }
+  if (lead.length) yield lead;
+}
+
+export function streamPocketAudio(base, text, signal) {
+  return trimSpeechLead(pocketPcm(base, text, signal));
 }
 
 const announcements = new Set([
